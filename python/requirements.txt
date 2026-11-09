@@ -1,0 +1,9 @@
+# Python 3.11 virtual environment. `python/specvis.sh setup` creates it from this file.
+
+# Core. Everything in specvis/core, specvis/threshold and specvis/procedure needs only this.
+numpy>=1.26,<3
+
+# Presentation layer (README.md, "The framework decision -- settled").
+# Pinned to the versions the port was developed and tested against.
+psychopy==2026.2.5
+PyQt6==6.11.0

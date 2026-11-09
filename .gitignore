@@ -1,0 +1,39 @@
+# ReFreM perimetry (Python). What must never be committed.
+
+# --- Participant data and results ---------------------------------------------
+# Every session, the participant records, the normal table, app state and error logs.
+# Share data privately (zip python/output/), never through GitHub.
+python/output/
+output/
+Results/
+/data/
+*_trials.csv
+*_summary.csv
+
+# --- Private and copyrighted documents -------------------------------------------
+# Proposal, papers, reports, notes: keep them out of the code repository.
+*.pdf
+*.doc
+*.docx
+*.ppt
+*.pptx
+*.xls
+*.xlsx
+*.psd
+/papers/
+/reports/
+/research_notes/
+/documentation/
+
+# --- Python environment and caches -------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# --- Editor and OS -------------------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+*.swp

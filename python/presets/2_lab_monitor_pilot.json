@@ -1,0 +1,10 @@
+{
+  "name": "Lab monitor - pilot (normal table)",
+  "description": "First 3-5 healthy people, building the normal table. 57 cm with a chin rest. MEASURE the monitor's visible width once and save it into this preset (Save settings).",
+  "settings": {
+    "screen_width_mm": 0.0,
+    "viewing_distance_mm": 570.0,
+    "extent": "full",
+    "pilot_mode": true
+  }
+}

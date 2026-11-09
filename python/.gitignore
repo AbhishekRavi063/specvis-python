@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+Results/
+*.egg-info/
+# Session output: participant data, never committed
+output/

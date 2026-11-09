@@ -1,0 +1,10 @@
+{
+  "name": "Lab monitor - controls and patients",
+  "description": "After the normal table exists: starting guesses from the table and same-quadrant neighbours. 57 cm with a chin rest. Use the same measured width as the pilot preset.",
+  "settings": {
+    "screen_width_mm": 0.0,
+    "viewing_distance_mm": 570.0,
+    "extent": "full",
+    "pilot_mode": false
+  }
+}

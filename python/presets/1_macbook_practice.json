@@ -1,0 +1,10 @@
+{
+  "name": "MacBook 14\" - practice",
+  "description": "Practice and checking the method on a 14-inch MacBook Pro at 35 cm. Not for the normal table: thresholds depend on the screen.",
+  "settings": {
+    "screen_width_mm": 302.0,
+    "viewing_distance_mm": 350.0,
+    "extent": "full",
+    "pilot_mode": true
+  }
+}
