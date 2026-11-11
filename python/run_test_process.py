@@ -22,7 +22,8 @@ sys.path.insert(0, str(HERE))
 
 from specvis.app.store import PERIMETRY_DIR, PRIOR_TABLE_FILE  # noqa: E402
 from specvis.core.luminance import LuminanceCalibration  # noqa: E402
-from specvis.procedure.perimetry import (field_half_degrees, fit_problem,  # noqa: E402
+from specvis.procedure.perimetry import (background_for, default_calibration,  # noqa: E402
+                                         field_half_degrees, fit_problem,
                                          results_marks, results_text, run_perimetry,
                                          settings_from_dict, write_outputs)
 from specvis.procedure.prior_table import PriorTable  # noqa: E402
@@ -38,23 +39,28 @@ def _log(row: dict) -> None:
 
 
 def settings_and_calibration(job: dict):
-    """The settings, and the luminance scale chosen in step 2 (or none).
+    """The settings, and the luminance scale chosen in step 2 (or the assumed display).
 
-    With a measured scale the background is set from its brightness % (as Specvis's
-    "Bg. brightness" does) and the highest contrast is limited to what the screen can
-    show around that background without clipping.
+    The background is the set cd/m^2 (10, the Humphrey's) on the measured scale, or on
+    an assumed display when there is no scale. With ``background_cd_m2`` 0 the old
+    Specvis way is kept: the background is the brightness % of the scale. The highest
+    contrast is limited to what the screen can show around the background.
     """
     settings = settings_from_dict(job["settings"])
     scale = job.get("scale")
     if not scale:
-        return settings, LuminanceCalibration.uncalibrated()
-    calibration = LuminanceCalibration.from_measurements(
-        scale["measurements"], f"scale {scale.get('name', '?')} (photometer)")
-    mean = float(calibration.luminance_at(settings.background_brightness_pct))
+        calibration = default_calibration(settings)
+    else:
+        calibration = LuminanceCalibration.from_measurements(
+            scale["measurements"], f"scale {scale.get('name', '?')} (photometer)")
+        if settings.background_cd_m2 <= 0:
+            settings = dataclasses.replace(settings, mean_luminance=float(
+                calibration.luminance_at(settings.background_brightness_pct)))
+    mean, _ = background_for(settings, calibration)
     limit = calibration.max_achievable_contrast(mean)
     zest = dataclasses.replace(settings.zest,
                                max_contrast=max(min(settings.zest.max_contrast, limit), 0.002))
-    settings = dataclasses.replace(settings, mean_luminance=mean, zest=zest,
+    settings = dataclasses.replace(settings, zest=zest,
                                    high_contrast=min(settings.high_contrast, zest.max_contrast),
                                    blind_spot_contrast=min(settings.blind_spot_contrast,
                                                            zest.max_contrast))
@@ -68,7 +74,7 @@ def run_test(job: dict, result_path: pathlib.Path) -> int:
     table = PriorTable.load(PRIOR_TABLE_FILE) if PRIOR_TABLE_FILE.exists() else None
     backend = PsychoPyBackend(screen=int(job.get("screen", 0)),
                               fullscreen=bool(job.get("fullscreen", True)))
-    background = float(calibration.brightness_for(settings.mean_luminance)) / 100.0
+    _, background = background_for(settings, calibration)
     backend.open(1400, 900, background_brightness=background)
     try:
         print(f"display {backend.size_px[0]}x{backend.size_px[1]} px, "

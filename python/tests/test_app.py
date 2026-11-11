@@ -98,6 +98,8 @@ require(everyone == ["OLD01", "PILOT02"], f"old session's participant is listed:
 presets = store.list_presets(presets_dir)
 require(len(presets) == 3 and presets[0].settings["viewing_distance_mm"] == 350.0,
         f"three shared presets: {[p.name for p in presets]}")
+require(presets[1].settings.get("strategy") == "zest" and presets[1].settings["pilot_mode"],
+        "the pilot (table) preset uses ZEST (full) with pilot mode on, as the plan says")
 
 print("2. the window")
 win = MainWindow(perimetry_dir, participants_file, presets_dir, perimetry_dir / "prior_table.csv")
@@ -163,6 +165,8 @@ def fake_launch(mode, job_path, on_done):
     on_done(0)
 
 
+win.apply_settings_values({"strategy": "zest", "pilot_mode": True})   # table people
+require(win.settings.strategy == "zest", "ZEST (full) chosen for the table people")
 win._launch = fake_launch
 win.show_results = lambda info: shown.append(info)
 win.start_test()

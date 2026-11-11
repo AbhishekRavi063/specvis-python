@@ -68,6 +68,23 @@ class LuminanceCalibration:
             "UNCALIBRATED - linear brightness assumed, values are not cd/m^2",
         )
 
+    @classmethod
+    def assumed_display(cls, max_cd_m2: float = 300.0, gamma: float = 2.2
+                        ) -> "LuminanceCalibration":
+        """A typical display, **assumed, not measured**: luminance = peak x (b/100)^gamma.
+
+        Lets a background be asked for in cd/m^2 (e.g. the Humphrey's 10 cd/m^2) before
+        a photometer is available, and makes nominal contrasts roughly right instead of
+        about half the real value, as the linear model gives on a gamma-2.2 screen. Still
+        ``calibrated=False``: every result says the luminance was assumed.
+        """
+        if max_cd_m2 <= 0 or gamma <= 0:
+            raise ValueError("peak luminance and gamma must be positive")
+        b = np.arange(TABLE_SIZE, dtype=float) / 100.0
+        return cls(max_cd_m2 * b ** gamma, False,
+                   f"ASSUMED display (gamma {gamma:g}, peak {max_cd_m2:g} cd/m^2) - "
+                   "not measured with a photometer")
+
     # -- forward ---------------------------------------------------------------
 
     def luminance_at(self, brightness):

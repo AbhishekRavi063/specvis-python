@@ -25,6 +25,16 @@ Results/
 /research_notes/
 /documentation/
 
+# Notes and extra READMEs: only the main README.md (repository root) is committed.
+*.md
+*.markdown
+*.rtf
+*.odt
+*.txt
+!/README.md
+!python/requirements.txt
+!python/requirements*.txt
+
 # --- Python environment and caches -------------------------------------------------
 .venv/
 venv/

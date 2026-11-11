@@ -39,7 +39,8 @@ The app follows Specvis: **Step 1** Patient, **Step 2** Screen and luminance sca
 2. **Step 2** - screen width and patient distance must be right: it must say **"The grid
    fits on this screen."** *Screen check* shows a box that must measure 10 cm.
 3. **Step 3** - leave the defaults (2 deg, 4 c/deg, 200 ms) unless the team decides.
-4. **Step 4** - **Pilot mode On** for the first 3-5 healthy people.
+4. **Step 4** - for the healthy people who build the normal table: **Procedure ZEST (full)**
+   and **Pilot mode On** (see section 4 for how many and which ages).
 5. **START** - check the summary, press **Start**.
 
 During the test: **SPACE** = seen, **P** = pause, **ESC** = stop (what was done is kept).
@@ -49,36 +50,88 @@ At the end the Results window shows the maps and the checks; then *Test the othe
 Night Shift, eco modes off); chin rest at the set distance (57 cm lab monitor, 35 cm
 MacBook); the other eye covered with an **opaque** patch.
 
-Full operator guide: [`python/HANDOVER.md`](python/HANDOVER.md).
+A longer operator guide is kept with the team, outside the repository.
 
 ## 3. How the test works
 
 - **Grid:** 72 points (+/-1 ... +/-21 deg across, +/-1 ... +/-13 deg up/down, none on a
   midline); the 4 inside the natural blind spot are skipped -> **68 tested**.
-- **Trial:** fixation cross 500 ms -> Gabor 200 ms -> up to 1200 ms to answer -> random gap
-  300-800 ms.
-- **Method: ZEST** (Bayesian). Each point starts at 50% contrast (or at a starting guess),
-  the estimate is updated after every answer, the next patch is shown at the estimate, and
-  the point stops when the estimate's SD < 0.15 log10 (4-20 patches; ~6 on average).
-- **Starting guesses, SITA-style** (Pragathi's proposal): from **our own normal table** and
-  from finished **neighbours in the same quadrant** (never across a midline, so stroke
-  borders are not blurred). No final smoothing.
-- **Quick blind rule:** missed 3x at 100% contrast -> blind. **Floor rule:** seen even at the
-  faintest contrast -> reported as such, not as a threshold.
-- **Checks** (catch trials): 10% blank (false presses <= 15%), 5% strong patches (misses
-  <= 10%), 5% blind-spot patches (seen <= 20%). A session is **VALID** only if all pass.
-- **Time:** ~16-20 min per eye in pilot mode.
+- **Trial:** the + stays on -> Gabor 200 ms -> time to answer (up to 1200 ms; after a few
+  answers it follows the person's own reaction times) -> random gap 300-600 ms (+300 ms after
+  a "not seen", as in SITA Fast).
+- **Background:** **10 cd/m2**, the Humphrey/SITA background (Padmini). On a normal 8-bit
+  screen so dark a grey cannot draw faint patches (one grey step is ~4% contrast), so the
+  patches are **dithered** (noisy-bit method): tiny random rounding that shows the right
+  contrast on average. Without a photometer scale the screen is *assumed* (gamma 2.2,
+  300 cd/m2 peak) and every result says so.
+- **Method: SITA Fast with a ZEST engine** (Step 4 -> Procedure; "ZEST (full)" is the
+  older, slower search). Taken from the published SITA papers (Bengtsson et al. 1997,
+  Bengtsson & Heijl 1998, Heijl et al. 2019) and Turpin et al. 2003:
+  - every point is a Bayesian estimate (ZEST), updated after every answer;
+  - the 4 seed points (one per quadrant) keep the strict search; their results start
+    their neighbours;
+  - **starting guess** = our normal table + finished neighbours in the same quadrant
+    (never across a midline), shaped like SITA's two models: mostly "normal", 20%
+    "abnormal" (anywhere worse);
+  - **stopping** is looser where vision is good and stricter where it is poor (SITA's
+    error-related factor). A point at the normal level can stop after **2 "seen"**
+    without a miss; anything worse than normal needs at least 4 patches with both a
+    "seen" and a "not seen"; a point near blind must be seen twice;
+  - **second search** at a point that ends far (0.8 log units) from its guess;
+  - **blind:** never seen, then missed twice at 100% contrast;
+  - presses less than 180 ms after the patch appears are **false presses**, not answers;
+  - at the end every point is **re-estimated** with the false-press and miss rates the
+    person actually had (SITA's post-processing).
+- **Checks** (catch trials, fewer than before): 5% blank (false presses <= 15%), 5% strong
+  patches (misses <= 10%), 5% blind-spot patches (seen <= 20%). A check fails only with
+  **at least 3** bad answers as well, so one or two chance slips do not fail a good
+  session. A session is **VALID** only if all pass.
+- **Time (simulated):** pilot mode (no table) ~10 min per eye; with a normal table ~3-4 min
+  for a healthy eye and ~6-9 min for a hemianopic eye. Real times will be a little longer.
+- **Results:** sensitivity in **contrast dB** (= -20 log10 contrast; higher = better) on
+  both the grid map and the contour map.
 
 ## 4. The normal table (pilot first)
 
-1. Test **3-5 healthy people**, both eyes, **Pilot mode On** (no guesses). Each run VALID.
+1. Test **healthy people**, both eyes, **Procedure ZEST (full)** and **Pilot mode On** (no guesses). Each run VALID.
 2. Step 4 -> *Settings* -> **Build normal table from valid pilot sessions** (invalid sessions
-   are skipped; people are counted, not eyes; left and right eyes are aligned).
+   are skipped; people are counted, not eyes; left and right eyes are aligned). The table
+   is a **hill of vision** fitted to everyone's thresholds, using the published model
+   (Pointer & Hess 1989; Baldwin, Meese & Baker 2012): sensitivity falls linearly in dB
+   with eccentricity, one slope each for temporal, nasal, up and down, combined
+   elliptically. Each point's table value is the hill's height there.
 3. Everyone after that: **Pilot mode Off** -> the test starts each point near the normal value
    (faster) and marks points worse than normal as *weak*.
 
-For patients, the table should come from 20-30 age-matched (about 40-75) healthy people,
-tested on the **lab monitor** (a table is only valid on the screen it was made on).
+### Who and how many (pilot participants for the table)
+
+There is no published minimum for a table like ours; these are practical estimates.
+
+| Part of the table | Needs |
+|---|---|
+| The hill (5 fitted numbers) | about **10** healthy people |
+| The normal spread (SD), used to mark spots as *weak* | about **15-20** healthy people |
+| An age correction (one number for the whole field) | at least about **5 older** healthy people (about **50-70**), besides the young group |
+
+Expected group: mostly lab members aged **20-30**, plus a few older healthy people.
+
+| Young (20-30) | Older (50-70) | What is possible |
+|---|---|---|
+| 15-20 | 5 or more | the hill + one age correction (planned, not yet in the software) |
+| 15-20 | 1-4 | the hill only; the older people are used to check the table |
+| about 10 | 0 | the hill only, as a feasibility pilot |
+
+Rules:
+
+- **Minimum: about 15-20 healthy people**, all sessions VALID, both eyes each.
+- Record every participant's **age** in Step 1.
+- The people who build the table are **not** reused as healthy controls in the study.
+- Build the table on the **lab monitor**, at the **final background luminance**: a table is
+  only valid on the screen and background it was made with.
+- With young people only, the table serves as SITA Fast's **starting guess**; patients'
+  *weak / intact* spots should be judged against their own seeing hemifield.
+
+Details and sources: `documentation/ReFreM-SITA-Fast-Study-Plan.md` in the specvis repo.
 
 ## 5. Data
 
@@ -121,16 +174,16 @@ python/
     data/         trial and Gabor logs
   presets/        shared settings
   tests/          run with python/specvis.sh test
-  docs/           PARITY.md (Java comparison), REBUILD-PLAN.md
+  tools/          check_pixels.py (checks the patch is drawn exactly on a real screen)
   run_app.py, run_test_process.py, run_perimetry.py, build_prior_table.py
-  HANDOVER.md     the operator guide
-  README.md       technical notes on the port
 ```
 
 ## 8. Known limits
 
-- Contrast is **nominal** until the monitor is calibrated with a photometer (Step 2 ->
-  luminance scale *New*).
+- The background and contrast are **assumed** until the monitor is calibrated with a
+  photometer (Step 2 -> luminance scale *New*); then the 10 cd/m2 background is exact.
+- SITA Fast settings were tuned on simulated observers, not yet on people; compare a few
+  real sessions with "ZEST (full)" before relying on them.
 - Timing is software self-report (no photodiode check yet).
 - No eye tracker yet: fixation is checked only with blind-spot catch trials.
 - Tested on a 14" MacBook Pro (Apple silicon). **Windows not yet tested** - set display

@@ -25,7 +25,8 @@ import time
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from specvis.procedure.perimetry import (CENTRAL, FINISH_KEY, FULL,  # noqa: E402
+from specvis.procedure.perimetry import (background_for, default_calibration,  # noqa: E402
+                                         CENTRAL, FINISH_KEY, FULL,  # noqa: E402
                                          OTHER_EYE_KEY, REPEAT_KEY, PerimetrySettings,
                                          results_marks, results_text, run_perimetry,
                                          write_outputs)
@@ -71,7 +72,7 @@ def ask_settings():
         order=["participant_id", "eye_tested", "pilot_mode", "grid", "screen_width_cm",
                "viewing_distance_cm", "fullscreen"],
         tip={"eye_tested": "the OPEN eye; cover the other one",
-             "pilot_mode": "on for the first 3-5 healthy people (builds the normal table)",
+             "pilot_mode": "on for the 15-20 table people, with ZEST (full) (builds the normal table)",
              "grid": "full = +/-21 x +/-13 deg (72 points); central = +/-13 deg",
              "screen_width_cm": "visible image width, measured (14-inch MacBook Pro: 30.2)",
              "viewing_distance_cm": "eye to screen, measured; MacBook 35, lab monitor 57"})
@@ -102,8 +103,9 @@ def main() -> int:
         print("Starting guesses: " + (f"normal table {table.source} + neighbours"
                                       if table else "neighbours only (no normal table yet)"))
 
+    calibration = default_calibration(settings)
     backend = PsychoPyBackend(fullscreen=fullscreen)
-    backend.open(1400, 900, background_brightness=0.5)
+    backend.open(1400, 900, background_brightness=background_for(settings, calibration)[1])
     maps = []
     try:
         print(f"Display {backend.size_px[0]}x{backend.size_px[1]} px, "
@@ -114,7 +116,8 @@ def main() -> int:
         while True:
             print(f"\n=== {settings.participant_id}: {settings.eye} eye ===", flush=True)
             try:
-                outcome = run_perimetry(settings, backend, prior_table=table,
+                outcome = run_perimetry(settings, backend, calibration=calibration,
+                                        prior_table=table,
                                         on_trial=lambda r: r["note"] and print(
                                             f"  trial {r['trial']}: {r['kind']} "
                                             f"({r['x_deg']}, {r['y_deg']}) -> {r['note']}",

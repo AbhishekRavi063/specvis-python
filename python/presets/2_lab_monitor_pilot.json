@@ -1,10 +1,23 @@
 {
   "name": "Lab monitor - pilot (normal table)",
-  "description": "First 3-5 healthy people, building the normal table. 57 cm with a chin rest. MEASURE the monitor's visible width once and save it into this preset (Save settings).",
+  "description": "The 15-20 healthy people (mostly 20-30, plus a few aged 50-70) whose results build the normal table. 57 cm with a chin rest. MEASURE the monitor's visible width once and save it into this preset (Save settings). ZEST (full) with pilot mode on, background 10 cd/m2 (Humphrey) with dithering; exact luminance only with a photometer scale.",
   "settings": {
     "screen_width_mm": 0.0,
     "viewing_distance_mm": 570.0,
     "extent": "full",
-    "pilot_mode": true
+    "pilot_mode": true,
+    "strategy": "zest",
+    "background_cd_m2": 10.0,
+    "dithering": true,
+    "fixation_ms": 0.0,
+    "iti_ms": [
+      300.0,
+      600.0
+    ],
+    "response_window_ms": 1200.0,
+    "adaptive_window": true,
+    "p_blank": 0.05,
+    "p_high": 0.05,
+    "p_blind_spot": 0.05
   }
 }

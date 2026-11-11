@@ -77,6 +77,10 @@ class PsychoPyBackend(StimulusBackend):
         # win.size reports physical pixels: 2 physical per point on a MacBook.
         # Everything above the seam works in physical pixels; _to_units converts.
         self._scale = float(getattr(self._win, "contentScaleFactor", 1.0) or 1.0)
+        # Hide the mouse pointer. On a MacBook a hand brushing the trackpad while
+        # pressing SPACE brings the pointer back, and near the + it looks like a white
+        # "L" -- something on screen that is not a stimulus. Hidden again every trial.
+        self._win.mouseVisible = False
         self._measured_refresh = self._measure_refresh()
 
     def close(self) -> None:
@@ -138,13 +142,22 @@ class PsychoPyBackend(StimulusBackend):
         from psychopy import visual
 
         win = self._require_window()
-        image = np.asarray(texture.brightness, dtype=float) * 2.0 - 1.0
+        # Our arrays run top row first (as the Java Specvis and the generator assume);
+        # PsychoPy draws an array's first row at the BOTTOM (OpenGL's convention). Without
+        # this flip every patch is shown upside down: a 45 deg tilt appears as 135 deg.
+        image = np.flipud(np.asarray(texture.brightness, dtype=float)) * 2.0 - 1.0
 
         # PsychoPy places by centre with the origin at screen centre and y upward;
         # our geometry measures from the top-left with y downward. Converted in
         # _to_units, in one place, so no caller has to remember the flip. The size is
         # in points too, so each texel lands on exactly one physical pixel.
-        pos = self._to_units(texture.centre_px)
+        # Snap the patch's corner to a whole physical pixel. With interpolate=False an
+        # edge between pixels makes PsychoPy duplicate or skip about 1 column in 8, which
+        # breaks up the stripes and the dithering. The shift is under half a pixel.
+        h_px, w_px = image.shape
+        cx, cy = texture.centre_px
+        snapped = (round(cx - w_px / 2.0) + w_px / 2.0, round(cy - h_px / 2.0) + h_px / 2.0)
+        pos = self._to_units(snapped)
 
         return visual.ImageStim(win, image=image, pos=pos, units="pix",
                                 size=(image.shape[1] / self._scale,
@@ -191,6 +204,8 @@ class PsychoPyBackend(StimulusBackend):
             raise ValueError("a train needs at least one frame")
 
         win = self._require_window()
+        if win.mouseVisible:
+            win.mouseVisible = False
         stims = [self._to_stim(t) for t in polarities]
 
         # Upload both textures before the train starts. Building an ImageStim inside
@@ -267,6 +282,17 @@ class PsychoPyBackend(StimulusBackend):
                 return None, None
             self._draw_fixation(fixation)
             win.flip()
+
+    def pointer_px(self) -> Optional[tuple[float, float]]:
+        """The mouse, in physical pixels from the top-left (PsychoPy gives points from
+        the centre, y up)."""
+        from psychopy import event
+
+        win = self._require_window()
+        if getattr(self, "_mouse", None) is None:
+            self._mouse = event.Mouse(win=win, visible=False)
+        x, y = self._mouse.getPos()
+        return (x * self._scale + win.size[0] / 2.0, win.size[1] / 2.0 - y * self._scale)
 
     def show_screen(self, text: str, marks: Sequence[Mark] = (),
                     keys: Sequence[str] = ("space",)) -> str:

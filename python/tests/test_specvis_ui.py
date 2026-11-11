@@ -102,8 +102,11 @@ require(win.f_scale_name.text() == "LAB_TEST" and "nominal" not in win.f_bg_lum.
 q = store.fit_quality(scale.measurements)
 require(q["chi_squared"] < 1 and 0 <= q["p_value"] <= 1, f"fit quality {q}")
 s2, cal = run_test_process.settings_and_calibration(win.job())
-require(cal.calibrated and abs(s2.mean_luminance - float(cal.luminance_at(50))) < 1e-9,
-        "the test process gets the scale and sets the background from it")
+from specvis.procedure.perimetry import background_for  # noqa: E402
+bg_mean, _ = background_for(s2, cal)
+require(cal.calibrated and abs(bg_mean - s2.background_cd_m2) < 1.0,
+        f"the test process gets the scale and puts the background at "
+        f"{s2.background_cd_m2:g} cd/m2 on it ({bg_mean:.2f})")
 win.scale_id = None
 win._refresh()
 

@@ -38,21 +38,24 @@ from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDateEdit,
                              QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout,
                              QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
                              QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
-                             QProgressBar, QPushButton, QSpinBox, QStackedWidget, QTableWidget,
+                             QProgressBar, QPushButton, QSizePolicy, QSpinBox, QStackedWidget, QTableWidget,
                              QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
 from ..core.gabor import GaborParameters, minimum_renderable_contrast, render_brightness
 from ..core.luminance import MEASUREMENT_POINTS, LuminanceCalibration
-from ..procedure.perimetry import (CENTRAL, FAILURE_REASONS, FULL, PerimetrySettings,
-                                   blind_spot_position, field_half_degrees, fit_problem,
-                                   grid_points, settings_from_dict, settings_to_dict)
+from ..procedure.perimetry import (CENTRAL, FAILURE_REASONS, FULL, SITA_FAST, STRATEGIES,
+                                   STRATEGY_NAMES, PerimetrySettings, background_for,
+                                   blind_spot_position, default_calibration,
+                                   field_half_degrees, fit_problem, grid_points,
+                                   settings_from_dict, settings_to_dict)
+from ..procedure.fixation import FIX_BLIND_SPOT, FIX_MOUSE, FIX_NONE, FIX_TRACKER
 from ..procedure.prior_table import PriorTable, build_prior_table
 from . import specvis_map, store
 from .main_window import GridPreview
 
 PYTHON_DIR = store.PYTHON_DIR
 STEP_NAMES = ["Step 1", "Step 2", "Step 3", "Step 4", "START"]
-PROCEDURE = "ReFreM perimetry (ZEST)"
+PROCEDURE = "ReFreM perimetry (SITA Fast with a ZEST engine)"
 KEYS = ["space", "return", "p", "escape", "q", "s", "x"]
 COLOURS = ["white", "black", "red", "green", "yellow"]
 
@@ -148,6 +151,37 @@ class StepTick(QWidget):
             p.drawLine(4, 9, 8, 13)
             p.drawLine(8, 13, 14, 5)
         p.end()
+
+
+class FitImage(QLabel):
+    """A picture that always fills its box, keeping its shape (rescaled on resize)."""
+
+    def __init__(self, path: Optional[pathlib.Path] = None, empty: str = ""):
+        super().__init__()
+        self._pix = QPixmap()
+        self._empty = empty
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMinimumSize(200, 150)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        if path is not None:
+            self.set_image(path)
+
+    def set_image(self, path: pathlib.Path) -> None:
+        self._pix = QPixmap(str(path))
+        self._fit()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._fit()
+
+    def _fit(self) -> None:
+        if self._pix.isNull():
+            self.setText(self._empty)
+            return
+        r = self.contentsRect()
+        self.setPixmap(self._pix.scaled(r.width(), r.height(),
+                                        Qt.AspectRatioMode.KeepAspectRatio,
+                                        Qt.TransformationMode.SmoothTransformation))
 
 
 def _fixed(widget, width: int, height: int = 40):
@@ -545,14 +579,16 @@ class ResultsDialog(QDialog):
         v = QVBoxLayout(self)
         v.addWidget(self._checks_label())
 
+        self.grid_png = self._tmp / "grid.png"
+        if self.rows:
+            specvis_map.draw_grid_map(self.rows, self.grid_png, meta=self.meta)
+        elif info.map_path.exists():
+            shutil.copy(info.map_path, self.grid_png)
+        self.big_contour = FitImage()
         tabs = QTabWidget()
         tabs.addTab(self._map_tab(), "Maps")
-        grid = QLabel()
-        pix = QPixmap(str(info.map_path))
-        if not pix.isNull():
-            grid.setPixmap(pix.scaledToWidth(1150, Qt.TransformationMode.SmoothTransformation))
-        grid.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tabs.addTab(grid, "Grid (large)")
+        tabs.addTab(FitImage(self.grid_png, "(no grid map in this session)"), "Grid (large)")
+        tabs.addTab(self.big_contour, "Contour (large)")
         tabs.addTab(self._points_tab(), "Points")
         info_text = QPlainTextEdit(json.dumps(self.meta, indent=2))
         info_text.setReadOnly(True)
@@ -588,7 +624,7 @@ class ResultsDialog(QDialog):
                  f"{'on' if info.pilot_mode else 'off'} &nbsp;|&nbsp; "
                  f"false presses {rate('false_alarms')} [{tick[c.get('false_alarms', False)]}]"
                  f" &nbsp; missed strong {rate('misses')} [{tick[c.get('misses', False)]}]"
-                 f" &nbsp; blind spot seen {rate('fixation')} [{tick[c.get('fixation', False)]}]"]
+                 f" &nbsp; fixation losses {rate('fixation')} [{tick[c.get('fixation', False)]}]"]
         lines += [FAILURE_REASONS[k] for k, ok in c.items() if not ok and k in FAILURE_REASONS]
         lab = QLabel("<br>".join(lines))
         lab.setWordWrap(True)
@@ -600,18 +636,11 @@ class ResultsDialog(QDialog):
         w = QWidget()
         v = QVBoxLayout(w)
         maps = QHBoxLayout()
-        self.map_image = QLabel()
-        self.map_image.setStyleSheet("background:#F0F0F0; border:2px solid #202020;")
-        self.map_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.map_image = FitImage()
+        self.map_image.setStyleSheet("background:#FFFFFF; border:1px solid #B4B2A9;")
         maps.addWidget(self.map_image, 1)
-        self.grid_image = QLabel()
-        self.grid_image.setStyleSheet("background:#FFFFFF; border:2px solid #202020;")
-        self.grid_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pix = QPixmap(str(self.info.map_path))
-        if not pix.isNull():
-            self.grid_image.setPixmap(pix.scaledToWidth(590, Qt.TransformationMode.SmoothTransformation))
-        else:
-            self.grid_image.setText("(no grid map in this session)")
+        self.grid_image = FitImage(self.grid_png, "(no grid map in this session)")
+        self.grid_image.setStyleSheet("background:#FFFFFF; border:1px solid #B4B2A9;")
         maps.addWidget(self.grid_image, 1)
         v.addLayout(maps, 1)
 
@@ -644,24 +673,19 @@ class ResultsDialog(QDialog):
         return w
 
     def _map_png(self) -> pathlib.Path:
-        s = self.meta.get("settings", {})
-        eye = s.get("eye", "R")
-        bs = ((1 if eye == "R" else -1) * float(s.get("blind_spot_temporal_deg", 15.5)),
-              -float(s.get("blind_spot_below_deg", 1.5)))
-        dropped = [tuple(p) for p in self.meta.get("blind_spot_grid_points_dropped", [])]
         path = self._tmp / "contour.png"
         specvis_map.draw_contour_map(
-            self.rows, path, title="",
+            self.rows, path, meta=self.meta,
             isofactor_db=self.iso.value(), interpolation=self.interp.value(),
             colorbar_density=self.density.value(), scheme=self.scheme.currentText(),
             show_axes=self.axes.isChecked(), show_fixation=self.fix.isChecked(),
-            blind_spot_xy=bs, dropped_points=dropped, width_px=1000,
             show_values=self.values.isChecked())
         return path
 
     def redraw(self) -> None:
-        pix = QPixmap(str(self._map_png()))
-        self.map_image.setPixmap(pix.scaledToWidth(590, Qt.TransformationMode.SmoothTransformation))
+        png = self._map_png()
+        self.map_image.set_image(png)
+        self.big_contour.set_image(png)
 
     def export(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Export data",
@@ -701,13 +725,8 @@ class CompareDialog(QDialog):
         h = QHBoxLayout(maps)
         ra, rb = _summary_rows(a), _summary_rows(b)
         for info, rows, name in ((a, ra, "a.png"), (b, rb, "b.png")):
-            col = QVBoxLayout()
-            col.addWidget(QLabel(f"<b>{info.participant_id}</b>  {info.label}"))
-            png = specvis_map.draw_contour_map(rows, tmp / name, width_px=720)
-            img = QLabel()
-            img.setPixmap(QPixmap(str(png)))
-            col.addWidget(img)
-            h.addLayout(col)
+            png = specvis_map.draw_contour_map(rows, tmp / name, meta=_session_meta(info))
+            h.addWidget(FitImage(png), 1)
         tabs.addTab(maps, "Maps")
         da = {(r["x_deg"], r["y_deg"]): r for r in ra}
         db_ = {(r["x_deg"], r["y_deg"]): r for r in rb}
@@ -817,6 +836,11 @@ class PatientResultsDialog(QDialog):
 # Step 4 sub-dialogs (Specvis: fixation monitor settings, procedure settings)
 # ------------------------------------------------------------------------------
 
+#: Step 4's "Fix. monitor technique" choices, and the setting each one means.
+FIX_CHOICES = {"Blindspot": FIX_BLIND_SPOT, "Eye tracker": FIX_TRACKER,
+               "Mouse (test)": FIX_MOUSE, "None": FIX_NONE}
+
+
 class FixMonitorDialog(QDialog):
     def __init__(self, parent, s: PerimetrySettings):
         super().__init__(parent)
@@ -827,13 +851,22 @@ class FixMonitorDialog(QDialog):
         self.contrast = _spin(0.1, 1.0, s.blind_spot_contrast, 0.05, 2)
         self.share = _spin(1.0, 20.0, 100 * s.p_blind_spot, 1.0, 0, "% of trials")
         self.limit = _spin(0.0, 100.0, 100 * s.max_fixation_loss_rate, 5.0, 0, "%")
+        self.tolerance = _spin(1.0, 5.0, s.fixation_tolerance_deg, 0.5, 1, "deg")
+        self.hold = _spin(0.0, 1000.0, s.fixation_hold_ms, 50.0, 0, "ms")
+        form.addRow(_label("Blind spot (Heijl-Krakau)", "note"))
         form.addRow("Blindspot distance from fix. point X (temporal)", self.temporal)
         form.addRow("Blindspot distance from fix. point Y (below)", self.below)
         form.addRow("Catch stimulus contrast", self.contrast)
         form.addRow("Monitor fixation on", self.share)
-        form.addRow("Fixation losses allowed, at most", self.limit)
         form.addRow(_label("Heijl-Krakau: a strong patch at the blind spot. A press means the "
-                           "eye moved. Only meaningful with the other eye covered.", "note"))
+                           "eye moved. Only meaningful with the other eye covered, and NOT "
+                           "when the blind spot falls in a blind half of the field.", "note"))
+        form.addRow(_label("Eye tracker / mouse", "note"))
+        form.addRow("Eye must stay within", self.tolerance)
+        form.addRow("Eye on the + before each patch", self.hold)
+        form.addRow(_label("A patch is shown only once the eye is on the +. A trial in which "
+                           "the eye left the + is thrown away and tested again later.", "note"))
+        form.addRow("Fixation losses allowed, at most", self.limit)
         b = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         b.accepted.connect(self.accept)
         b.rejected.connect(self.reject)
@@ -844,7 +877,9 @@ class FixMonitorDialog(QDialog):
                     blind_spot_below_deg=self.below.value(),
                     blind_spot_contrast=self.contrast.value(),
                     p_blind_spot=self.share.value() / 100.0,
-                    max_fixation_loss_rate=self.limit.value() / 100.0)
+                    max_fixation_loss_rate=self.limit.value() / 100.0,
+                    fixation_tolerance_deg=self.tolerance.value(),
+                    fixation_hold_ms=self.hold.value())
 
 
 class ProcedureDialog(QDialog):
@@ -852,7 +887,7 @@ class ProcedureDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"Procedure settings - {PROCEDURE}")
         form = QFormLayout(self)
-        self.pilot = QCheckBox("Pilot mode (first 3-5 healthy people: no starting guesses, "
+        self.pilot = QCheckBox("Pilot mode (the 15-20 table people: no starting guesses, "
                                "builds the normal table)")
         self.pilot.setChecked(s.pilot_mode)
         self.sd = _spin(0.05, 0.5, s.zest.sd_stop, 0.01, 2, "log10")
@@ -1181,7 +1216,7 @@ class SpecvisWindow(QMainWindow):
 
     def calibration(self) -> LuminanceCalibration:
         s = self.current_scale()
-        return s.calibration() if s else LuminanceCalibration.uncalibrated()
+        return s.calibration() if s else default_calibration(self.settings)
 
     def scale_new(self) -> None:
         d = ScaleDialog(self)
@@ -1269,10 +1304,20 @@ class SpecvisWindow(QMainWindow):
 
         right = QVBoxLayout()
         right.setSpacing(4)
-        self.f_bg = _fixed(_spin(1.0, 99.0, s.background_brightness_pct, 1.0, 0), 180, H)
+        self.f_bg = _fixed(_spin(1.0, 200.0, s.background_cd_m2, 1.0, 1), 180, H)
+        self.f_bg.setToolTip("Background luminance asked for, cd/m2. 10 = the Humphrey "
+                             "perimeter's (SITA). Exact only with a photometer scale (Step 2).")
         self.f_bg_lum = _fixed(_readonly(), 180, H)
-        right.addLayout(_row([_lab("Bg. brightness (%)", 220, H, 18), self.f_bg]))
-        right.addLayout(_row([_lab("Bg. lum. (cd/m2)", 220, H, 18), self.f_bg_lum]))
+        self.f_bg_lum.setToolTip("What the screen gives: the nearest grey level, and whether it "
+                                 "is measured or assumed")
+        right.addLayout(_row([_lab("Bg. lum. wanted (cd/m2)", 220, H, 17), self.f_bg]))
+        right.addLayout(_row([_lab("Bg. lum. shown (cd/m2)", 220, H, 17), self.f_bg_lum]))
+        self.f_dither = _fixed(QCheckBox("Dithering (faint patches on a dark background)"), 450, H)
+        self.f_dither.setChecked(s.dithering)
+        self.f_dither.setToolTip("Noisy-bit dithering: lets an 8-bit screen show contrasts finer "
+                                 "than one grey step. Keep ON with a dark background.")
+        self.f_dither.toggled.connect(self._read)
+        right.addLayout(_row([self.f_dither]))
         right.addWidget(_separator())
         self.f_grid = _fixed(QComboBox(), 85, H)
         self.f_grid.addItems([FULL, CENTRAL])
@@ -1334,7 +1379,11 @@ class SpecvisWindow(QMainWindow):
         self.f_fix_size = _fixed(_readonly("0.5 / 0.5"), 180, 40)
         tl.addLayout(_row([_lab("Fix. point size XY (°)", 210, 40, 18), self.f_fix_size], spacing=10))
         self.f_fix_mon = _fixed(QComboBox(), 180, 40)
-        self.f_fix_mon.addItems(["Blindspot", "None"])
+        self.f_fix_mon.addItems(list(FIX_CHOICES))
+        self.f_fix_mon.setToolTip("Blindspot: Heijl-Krakau catch trials.  Eye tracker: Tobii Pro "
+                                  "(gaze-contingent; trials with eye movements are repeated).  "
+                                  "Mouse (test): the mouse stands in for the eye, to try the "
+                                  "procedure without a tracker.")
         tr.addLayout(_row([_lab("Fix. monitor technique", 210, 40, 18), self.f_fix_mon], spacing=10))
         tr.addWidget(_fixed(_button("Fixation monitor settings", self.fix_monitor_settings), 400, 40),
                      0, Qt.AlignmentFlag.AlignHCenter)
@@ -1367,13 +1416,17 @@ class SpecvisWindow(QMainWindow):
             box.addItems(KEYS)
             bl.addLayout(_row([_lab(name, 190, 40, 18), box], spacing=10))
         self.f_procedure = _fixed(QComboBox(), 200, 40)
-        self.f_procedure.addItems(["ZEST (ReFreM)"])
-        self.f_procedure.setToolTip(PROCEDURE)
+        self.f_procedure.addItems(["SITA Fast", "ZEST (full)"])
+        self.f_procedure.setToolTip("SITA Fast: SITA Fast's published rules around a ZEST engine "
+                                    "(about 4 min a healthy eye, 8 min with hemianopia, with a "
+                                    "normal table). ZEST (full): the slower, stricter search, "
+                                    "used with pilot mode to build the normal table.")
+        self.f_procedure.currentIndexChanged.connect(self._read)
         br.addLayout(_row([_lab("Procedure", 190, 40, 18), self.f_procedure], spacing=10))
         br.addLayout(_row([_lab("", 190, 40), _fixed(_button("Settings", self.procedure_settings),
                                                       200, 40)], spacing=10))
         self.f_pilot = _fixed(QCheckBox("On"), 200, 40)
-        self.f_pilot.setToolTip("ON for the first 3-5 healthy people (builds the normal table); "
+        self.f_pilot.setToolTip("ON for the 15-20 table people, with ZEST (full) (builds the normal table); "
                                 "OFF afterwards (uses the table)")
         self.f_pilot.toggled.connect(self._read)
         br.addLayout(_row([_lab("Pilot mode", 190, 40, 18), self.f_pilot], spacing=10))
@@ -1490,10 +1543,13 @@ class SpecvisWindow(QMainWindow):
         self.f_window.setValue(s.response_window_ms)
         self.f_iti_c.setValue(s.iti_ms[0])
         self.f_iti_r.setValue(s.iti_ms[1] - s.iti_ms[0])
-        self.f_bg.setValue(s.background_brightness_pct)
+        self.f_bg.setValue(s.background_cd_m2 if s.background_cd_m2 > 0 else 10.0)
+        self.f_dither.setChecked(s.dithering)
+        self.f_procedure.setCurrentIndex(0 if s.strategy == SITA_FAST else 1)
         self.f_grid.setCurrentText(s.extent)
         self.f_fix_colour.setCurrentText(s.fixation_colour)
-        self.f_fix_mon.setCurrentText("None" if s.fixation_monitoring == "none" else "Blindspot")
+        self.f_fix_mon.setCurrentText(next((k for k, v in FIX_CHOICES.items()
+                                            if v == s.fixation_monitoring), "Blindspot"))
         self.f_key_answer.setCurrentText(s.answer_key)
         self.f_key_pause.setCurrentText(s.pause_key)
         self.f_key_cancel.setCurrentText(s.cancel_key)
@@ -1512,9 +1568,11 @@ class SpecvisWindow(QMainWindow):
             orientation_degrees=self.f_ori.value(), stimulus_ms=self.f_time.value(),
             fixation_ms=self.f_fix_ms.value(), response_window_ms=self.f_window.value(),
             iti_ms=(self.f_iti_c.value(), self.f_iti_c.value() + self.f_iti_r.value()),
-            background_brightness_pct=self.f_bg.value(), extent=self.f_grid.currentText(),
+            background_cd_m2=self.f_bg.value(), dithering=self.f_dither.isChecked(),
+            strategy=STRATEGIES[self.f_procedure.currentIndex()],
+            extent=self.f_grid.currentText(),
             fixation_colour=self.f_fix_colour.currentText(),
-            fixation_monitoring="none" if self.f_fix_mon.currentText() == "None" else "blind spot",
+            fixation_monitoring=FIX_CHOICES.get(self.f_fix_mon.currentText(), FIX_BLIND_SPOT),
             answer_key=self.f_key_answer.currentText(), pause_key=self.f_key_pause.currentText(),
             cancel_key=self.f_key_cancel.currentText(), pilot_mode=self.f_pilot.isChecked())
         d["zest"] = dict(d["zest"], max_contrast=self.f_maxc.value(),
@@ -1572,17 +1630,20 @@ class SpecvisWindow(QMainWindow):
         self.f_scale_name.setText(scale.name if scale else store.UNCALIBRATED)
         self.f_bg_scale.setText(self.f_scale_name.text() + "  (same as stimulus)")
         cal = self.calibration()
-        bg_lum = float(cal.luminance_at(s.background_brightness_pct))
-        self.f_bg_lum.setText(f"{bg_lum:.2f}" + ("" if cal.calibrated else "  (nominal)"))
-        floor = minimum_renderable_contrast(cal, bg_lum if cal.calibrated else s.mean_luminance)
-        top = min(s.zest.max_contrast, cal.max_achievable_contrast(bg_lum)) if cal.calibrated \
-            else s.zest.max_contrast
+        bg_lum, bg_b = background_for(s, cal)
+        self.f_bg_lum.setText(f"{bg_lum:.2f}" + ("" if cal.calibrated else " (assumed)"))
+        self.f_bg_lum.setToolTip(f"Grey level RGB {round(bg_b * 255)}. "
+                                 + ("Measured with the photometer scale." if cal.calibrated
+                                    else "Assumed display (no photometer scale yet): "
+                                    + cal.source))
+        floor = 0.0 if s.dithering else minimum_renderable_contrast(cal, bg_lum)
+        top = min(s.zest.max_contrast, cal.max_achievable_contrast(bg_lum))
         lo_c = max(floor, s.zest.min_contrast)
         self.f_db_min.setText(f"{-20 * math.log10(top) + 0.0:.1f}")
         self.f_db_max.setText(f"{-20 * math.log10(lo_c):.1f}")
-        lum = bg_lum if cal.calibrated else s.mean_luminance
-        self.f_maxlum.setText(f"{lum * (1 + top):.2f}" + ("" if cal.calibrated else " (nominal)"))
-        self.f_minlum.setText(f"{lum * (1 + lo_c):.3f}" + ("" if cal.calibrated else " (nominal)"))
+        lum = bg_lum
+        self.f_maxlum.setText(f"{lum * (1 + top):.2f}" + ("" if cal.calibrated else " (assumed)"))
+        self.f_minlum.setText(f"{lum * (1 + lo_c):.3f}" + ("" if cal.calibrated else " (assumed)"))
         self.f_size_y.setText(f"{s.diameter_degrees:g}")
         self.grid_pane.set_settings(s)
         self.f_db_range.setText(f"{-20 * math.log10(top) + 0.0:.1f} to {-20 * math.log10(lo_c):.1f} dB"
@@ -1590,8 +1651,10 @@ class SpecvisWindow(QMainWindow):
         self.f_sigma.setText(f"{s.diameter_degrees / 6:.3f}")
         self._preview()
         self.f_proc_summary.setText(
-            f"Pilot mode {'ON' if s.pilot_mode else 'off'};  stop at SD < {s.zest.sd_stop:.2f} log10, "
-            f"{s.zest.min_trials}-{s.zest.max_trials} trials per location;  catch: blank "
+            f"{STRATEGY_NAMES[s.strategy]};  pilot mode {'ON' if s.pilot_mode else 'off'};  "
+            + (f"stop: SITA Fast (seed points SD < {s.zest.sd_stop:.2f} log10)"
+               if s.strategy == SITA_FAST else f"stop at SD < {s.zest.sd_stop:.2f} log10")
+            + f", {s.zest.min_trials}-{s.zest.max_trials} trials per location;  catch: blank "
             f"{100 * s.p_blank:.0f}%, strong {100 * s.p_high:.0f}%, blind spot "
             f"{100 * s.p_blind_spot:.0f}%;  normal table: {self._table_text()}")
         kept, _ = grid_points(s)
@@ -1607,13 +1670,16 @@ class SpecvisWindow(QMainWindow):
             f"Stimulus           Gabor {s.diameter_degrees:g}°, {s.spatial_frequency_cpd:g} c/°, "
             f"{s.orientation_degrees:g}°, {s.stimulus_ms:.0f} ms",
             f"Contrast           {s.zest.min_contrast:g} to {s.zest.max_contrast:g}",
-            f"Timing             + {s.fixation_ms:.0f} ms, answer {s.response_window_ms:.0f} ms",
+            f"Timing             + {s.fixation_ms:.0f} ms, answer <= {s.response_window_ms:.0f} ms"
+            + (", adaptive" if s.adaptive_window else ""),
             f"Interval           {s.iti_ms[0]:.0f} + 0-{s.iti_ms[1] - s.iti_ms[0]:.0f} ms",
-            f"Background         {s.background_brightness_pct:.0f} %, {self.f_bg_lum.text()}",
+            f"Background         {self.f_bg_lum.text()} cd/m2"
+            + (", dithered" if s.dithering else ""),
             f"Stimuli            {s.extent} grid: {len(kept)} locations",
             f"Fixation           {s.fixation_colour} +, check: {s.fixation_monitoring}",
             f"Keys               {s.answer_key} / {s.pause_key} / {s.cancel_key}",
-            f"Procedure          ZEST, pilot mode {'ON' if s.pilot_mode else 'off'}",
+            f"Procedure          {STRATEGY_NAMES[s.strategy]}, pilot mode "
+            f"{'ON' if s.pilot_mode else 'off'}",
             f"Normal table       {self._table_text()}",
         ]
         problems = self.problems()
@@ -1629,9 +1695,12 @@ class SpecvisWindow(QMainWindow):
     def _preview(self) -> None:
         s = self.settings
         ppd = 200.0 / max(s.diameter_degrees, 0.5)
+        cal = self.calibration()
+        mean, _ = background_for(s, cal)
         g = GaborParameters(s.diameter_degrees, s.spatial_frequency_cpd, s.orientation_degrees,
-                            0.0, s.diameter_degrees / 6.0, 50.0, min(0.8, s.zest.max_contrast))
-        b = render_brightness(g, LuminanceCalibration.uncalibrated(), ppd, ppd)
+                            0.0, s.diameter_degrees / 6.0, mean,
+                            min(0.8, s.zest.max_contrast, cal.max_achievable_contrast(mean)))
+        b = render_brightness(g, cal, ppd, ppd)
         img = np.ascontiguousarray((b * 255).astype(np.uint8))
         self._preview_bytes = img
         q = QImage(img.data, img.shape[1], img.shape[0], img.shape[1], QImage.Format.Format_Grayscale8)
@@ -1691,7 +1760,8 @@ class SpecvisWindow(QMainWindow):
         table, messages = build_prior_table(summaries) if summaries else (None, [])
         if not table or not table.entries:
             QMessageBox.information(self, "Normal table",
-                                    "No valid sessions to build from.\n\n" + "\n".join(messages))
+                                    "No valid ZEST (full) pilot-mode sessions to build "
+                                    "from.\n\n" + "\n".join(messages))
             return
         table.save(self.prior_table_file)
         people = max(e.n_participants for e in table.entries.values())

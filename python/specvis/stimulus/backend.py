@@ -159,6 +159,11 @@ class StimulusBackend(abc.ABC):
                     keys: Sequence[str] = ("space",)) -> str:
         """Show text (and optional marks) until one of ``keys`` is pressed; return it."""
 
+    def pointer_px(self) -> Optional[Tuple[float, float]]:
+        """The mouse pointer in screen pixels (top-left, y down), or None when this
+        display cannot tell. Used only to stand in for an eye tracker in testing."""
+        return None
+
 
 class NullBackend(StimulusBackend):
     """A backend that draws nothing, for testing everything above the seam.

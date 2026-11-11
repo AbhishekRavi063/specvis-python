@@ -11,8 +11,20 @@ SITA-style Bayesian search -- built without Zeiss's normative database:
    borders at the vertical and horizontal midlines; borrowing across them would
    blur exactly the border the map is for.
 3. **ZEST** at every point (:mod:`specvis.threshold.zest`), with the quick blind rule.
-4. **Pilot mode** switches the starting guesses off, so the first 3-5 participants
-   give clean, independent thresholds for the table.
+4. **Pilot mode** switches the starting guesses off, so the 15-20 table
+   people (tested with ZEST (full)) give clean, independent thresholds for the table.
+5. **SITA Fast** (``strategy``, the default) puts SITA Fast's published rules around
+   ZEST (see :mod:`specvis.threshold.zest`): level-dependent stopping, early stop
+   after one "seen" at normal points, a two-model starting guess, a second search at
+   points far from their guess, quicker blind confirmation, pacing that follows the
+   participant's reaction times, presses too fast to be real counted as false, and a
+   final re-estimate with the measured false-answer rates. The four seed points keep
+   the strict search, as SITA's primary points do.
+
+**Background** (Padmini, after SITA): 10 cd/m^2, the Humphrey's. Without a
+photometer scale the display is *assumed* (gamma 2.2, 300 cd/m^2 peak) and every
+result says so. On an 8-bit screen so dark a background cannot draw faint patches
+(one grey step is ~4% contrast), so patches are **dithered** (noisy-bit method).
 
 Catch trials, as in ``untitled.py``: blank presentations (false alarms), strong
 presentations at points already seen well (misses), and presentations at the
@@ -23,6 +35,13 @@ fixation, as on a clinical printout. They are placed on the flat screen with the
 tangent (``d * tan``) model, so a point labelled 21 degrees really is 21 degrees.
 The patch itself is drawn at the central pixels-per-degree, as PsychoPy's
 ``degFlatPos`` units do.
+
+**Fixation** (``fixation_monitoring``): the blind-spot check (Heijl-Krakau), none, or
+gaze -- an eye tracker (Tobii Pro Fusion, :mod:`specvis.procedure.fixation`), or the
+mouse standing in for one in testing. With gaze, a patch is shown only once the eye has
+held the + for ``fixation_hold_ms``; a trial in which the eye left the + during the
+patch is thrown away and the point is tested again later. The blind-spot trials are
+then dropped, and their share goes to the other two checks.
 
 **Honest limits.** Contrast is nominal unless the luminance scale came from a
 photometer; timing is software self-report. Both are written into every session.
@@ -42,13 +61,16 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from ..core.gabor import (GaborParameters, measure_contrast, minimum_renderable_contrast,
-                          render_brightness)
+from ..core.gabor import (GaborParameters, dither_8bit, measure_contrast,
+                          minimum_renderable_contrast, nominal_contrast, render_brightness,
+                          snap_background)
 from ..core.geometry import PhysicalScreen
 from ..core.luminance import LuminanceCalibration
 from ..stimulus.backend import Mark, StimulusBackend, Texture
 from ..threshold.base import Termination
 from ..threshold.zest import ZEST, ZestLocationThreshold, ZestSettings
+from .fixation import (FIX_BLIND_SPOT, FIX_NONE, FIXATION_MODES, GAZE_MODES,
+                       FixationMonitor, judge_patch, monitor_for)
 from .prior_table import PriorTable
 from .session import Aborted, SessionError
 
@@ -65,6 +87,12 @@ EXTENTS = (FULL, CENTRAL)
 # Point and trial kinds, as written to trials.csv
 ZEST_TRIAL, PROBE_TRIAL = "zest", "zest_probe_max"
 BLANK, HIGH, BLIND_SPOT, PRACTICE = "blank_catch", "high_catch", "blind_spot", "practice"
+FIXATION_BREAK = "FIXATION_BREAK"
+
+# Strategies
+SITA_FAST, ZEST_FULL = "sita_fast", "zest"
+STRATEGIES = (SITA_FAST, ZEST_FULL)
+STRATEGY_NAMES = {SITA_FAST: "SITA Fast (ZEST engine)", ZEST_FULL: "ZEST (full)"}
 
 # Map categories
 SEEN, WEAK, BLIND, NOT_FINISHED = "seen", "weak", "blind", "not_finished"
@@ -76,6 +104,7 @@ class PerimetrySettings:
     eye: str = "R"                        # the eye tested; the other is covered
     extent: str = FULL                    # FULL = +/-21 x +/-13, CENTRAL = +/-13 x +/-13
     pilot_mode: bool = True               # no starting guesses: clean data for the table
+    strategy: str = SITA_FAST
 
     # Screen, measured
     screen_width_mm: float = 302.0
@@ -85,18 +114,30 @@ class PerimetrySettings:
     diameter_degrees: float = 2.0
     spatial_frequency_cpd: float = 4.0
     orientation_degrees: float = 45.0
-    mean_luminance: float = 50.0          # on the calibration's own scale
+    mean_luminance: float = 50.0          # on the calibration's own scale; used only
+                                          # when background_cd_m2 is 0
+    # Background (Padmini, after SITA/Humphrey)
+    background_cd_m2: float = 10.0        # 0 = use mean_luminance as given
+    assumed_max_cd_m2: float = 300.0      # display model when there is no photometer scale
+    assumed_gamma: float = 2.2
+    dithering: bool = True                # noisy-bit: faint patches on a dark background
 
     # Timing (untitled.py)
     stimulus_ms: float = 200.0
-    fixation_ms: float = 500.0
-    response_window_ms: float = 1200.0    # after the stimulus ends
-    iti_ms: Tuple[float, float] = (300.0, 800.0)
+    fixation_ms: float = 0.0              # extra wait before each patch (the + is always on)
+    response_window_ms: float = 1200.0    # after the stimulus ends (the most it can be)
+    iti_ms: Tuple[float, float] = (300.0, 600.0)
+    # SITA-style pacing
+    adaptive_window: bool = True          # the window follows the participant's reaction times
+    min_response_window_ms: float = 500.0
+    miss_extra_pause_ms: float = 300.0    # SITA Fast's extra pause after a "not seen"
+    early_press_ms: float = 180.0         # a press sooner than this after onset is a false press
+    post_process: bool = True             # re-estimate with the measured false-answer rates
     practice_trials: int = 3
     break_every_trials: int = 60
 
     # Catch trials and validity (untitled.py)
-    p_blank: float = 0.10
+    p_blank: float = 0.05                 # fewer: early presses also count as false presses
     p_high: float = 0.05
     p_blind_spot: float = 0.05
     high_contrast: float = 0.90
@@ -107,19 +148,36 @@ class PerimetrySettings:
     max_false_alarm_rate: float = 0.15
     max_miss_rate: float = 0.10
     max_fixation_loss_rate: float = 0.20
+    #: A check fails only with at least this many bad answers as well as a rate over its
+    #: limit. With ~10 catch trials of each kind (SITA Fast keeps them few), one or two
+    #: chance lapses would otherwise fail a good session about 1 time in 6.
+    min_failures: int = 3
 
     # Speed-ups
     seed_points: Tuple[Tuple[int, int], ...] = ((-9, 7), (9, 7), (-9, -7), (9, -7))
     neighbour_radius_deg: float = 8.0
     prior_sd_log: float = 0.5             # deliberately broad
     prior_flat_weight: float = 0.2
+    # SITA Fast's starting guess: narrower (a normal table is trusted more), with SITA's
+    # "abnormal" model in place of most of the flat part. Tuned by simulation.
+    fast_prior_sd_log: float = 0.25
+    fast_prior_flat_weight: float = 0.05
+    fast_prior_sd_better_log: float = 0.12   # nobody is much better than normal
+    prior_abnormal_weight: float = 0.2    # Turpin et al. 2003: abnormal:normal 1:4
+    #: SITA's 12 dB rule: reopen a point this far from its guess. 12 dB is about a third
+    #: of the Humphrey's normal range; our contrast range is ~2.5 log units, so 0.8.
+    retest_log: float = 0.8
     #: Without a normal table, a threshold above this counts as "weak" on the map.
     #: Provisional: replace with the table's normal range once it exists.
     weak_contrast: float = 0.20
 
     # Fixation and keys (Specvis step 4)
     fixation_colour: str = "white"
-    fixation_monitoring: str = "blind spot"   # or "none": no blind-spot catch trials
+    fixation_monitoring: str = FIX_BLIND_SPOT  # "none", "eye tracker" or "mouse" (testing)
+    # With gaze (eye tracker / mouse)
+    fixation_tolerance_deg: float = 2.5   # the eye must stay within this of the +
+    fixation_hold_ms: float = 200.0       # held this long before a patch is shown
+    fixation_wait_ms: float = 5000.0      # then a "look at the +" reminder
     answer_key: str = "space"
     pause_key: str = "p"
     cancel_key: str = "escape"
@@ -134,10 +192,27 @@ class PerimetrySettings:
             raise SessionError("perimetry is monocular: eye must be 'L' or 'R'")
         if self.extent not in EXTENTS:
             raise SessionError(f"extent must be one of {EXTENTS}")
+        if self.fixation_monitoring not in FIXATION_MODES:
+            raise SessionError(f"fixation monitoring must be one of {FIXATION_MODES}")
+        if self.strategy not in STRATEGIES:
+            raise SessionError(f"strategy must be one of {STRATEGIES}")
         if self.p_blank + self.p_high + self.p_blind_spot >= 0.5:
             raise SessionError("catch trials must be under half of all trials")
         if self.stimulus_ms <= 0 or self.viewing_distance_mm <= 0 or self.screen_width_mm <= 0:
             raise SessionError("stimulus time, distance and screen width must be positive")
+
+    @property
+    def watches_gaze(self) -> bool:
+        return self.fixation_monitoring in GAZE_MODES
+
+    def catch_rates(self) -> Tuple[float, float, float]:
+        """(blank, strong, blind spot) shares. With gaze there are no blind-spot trials;
+        their share goes half to each of the other two checks."""
+        if self.fixation_monitoring == FIX_BLIND_SPOT:
+            return self.p_blank, self.p_high, self.p_blind_spot
+        if self.watches_gaze:
+            return self.p_blank + self.p_blind_spot / 2, self.p_high + self.p_blind_spot / 2, 0.0
+        return self.p_blank, self.p_high, 0.0
 
     @property
     def temporal_sign(self) -> int:
@@ -153,6 +228,8 @@ class PerimetryPoint:
     zest: ZestLocationThreshold
     started: bool = False
     prior_source: str = ""
+    expected_log: Optional[float] = None   # the starting guess, for SITA's retest rule
+    seed: bool = False
 
     @property
     def quadrant(self) -> Tuple[bool, bool]:
@@ -214,6 +291,17 @@ class PerimetryOutcome:
     duration_s: float
     point_px: Dict[int, Tuple[float, float]] = field(default_factory=dict)
     patch_radius_px: float = 0.0
+    background_cd_m2: float = float("nan")
+    post_processing: Dict[str, float] = field(default_factory=dict)
+    fixation_monitor: str = ""
+    gaze_check: Dict[str, object] = field(default_factory=dict)
+    gaze_samples: List[Tuple[float, Optional[float], Optional[float]]] = field(default_factory=list)
+
+    @property
+    def early_press_rate(self) -> float:
+        """Presses too soon after onset to be a response to the patch, per patch shown."""
+        n = self.counts.get("presentations", 0)
+        return self.counts.get("early_presses", 0) / n if n else float("nan")
 
     @property
     def false_alarm_rate(self) -> float:
@@ -227,24 +315,36 @@ class PerimetryOutcome:
 
     @property
     def fixation_loss_rate(self) -> float:
+        """Blind-spot patches seen, or with gaze, patches thrown away for an eye movement."""
+        if self.settings.watches_gaze:
+            n = self.counts.get("gaze_checked", 0)
+            return self.counts.get("fixation_breaks", 0) / n if n else float("nan")
         n = self.counts["blind_spot"]
         return self.counts["blind_spot_seen"] / n if n else float("nan")
+
+    @property
+    def fixation_failures(self) -> int:
+        return self.counts.get("fixation_breaks" if self.settings.watches_gaze
+                               else "blind_spot_seen", 0)
 
     @property
     def checks(self) -> Dict[str, bool]:
         """Each reliability check, True when passed. A check with no trials fails."""
         s = self.settings
 
-        def under(rate: float, limit: float) -> bool:
-            return not math.isnan(rate) and rate <= limit
+        def under(rate: float, limit: float, bad: int) -> bool:
+            return not math.isnan(rate) and (rate <= limit or bad < s.min_failures)
 
+        c = self.counts
         return {
-            "false_alarms": under(self.false_alarm_rate, s.max_false_alarm_rate),
-            "misses": under(self.miss_rate, s.max_miss_rate),
+            "false_alarms": under(self.false_alarm_rate, s.max_false_alarm_rate,
+                                  c["false_alarms"]),
+            "misses": under(self.miss_rate, s.max_miss_rate, c["misses"]),
             # Fixation monitoring switched off: not checked, so not failed. session.json
             # records that it was off.
-            "fixation": (s.fixation_monitoring == "none"
-                         or under(self.fixation_loss_rate, s.max_fixation_loss_rate)),
+            "fixation": (s.fixation_monitoring == FIX_NONE
+                         or under(self.fixation_loss_rate, s.max_fixation_loss_rate,
+                                  self.fixation_failures)),
             "completed": not self.aborted,
         }
 
@@ -257,6 +357,30 @@ def blind_spot_position(settings: PerimetrySettings) -> Tuple[float, float]:
     """Where the blind-spot catch trials go, in field degrees (x right, y up)."""
     return (settings.temporal_sign * settings.blind_spot_temporal_deg,
             -settings.blind_spot_below_deg)
+
+
+def background_for(settings: PerimetrySettings, calibration: LuminanceCalibration
+                   ) -> Tuple[float, float]:
+    """(mean luminance, brightness 0-1) of the background, on a real 8-bit grey level."""
+    target = settings.background_cd_m2 if settings.background_cd_m2 > 0 else \
+        settings.mean_luminance
+    return snap_background(calibration, target)
+
+
+def default_calibration(settings: PerimetrySettings) -> LuminanceCalibration:
+    """Without a photometer scale: an assumed display when the background is asked for
+    in cd/m^2, else the old linear 0-100 scale."""
+    if settings.background_cd_m2 > 0:
+        return LuminanceCalibration.assumed_display(settings.assumed_max_cd_m2,
+                                                    settings.assumed_gamma)
+    return LuminanceCalibration.uncalibrated()
+
+
+def zest_settings_for(settings: PerimetrySettings, seed: bool) -> ZestSettings:
+    """Seeds keep the strict search (SITA's primary points); the rest run SITA Fast."""
+    if settings.strategy != SITA_FAST or seed:
+        return settings.zest
+    return dataclasses.replace(settings.zest, fast_stop=True)
 
 
 def field_half_degrees(settings: PerimetrySettings, width_px: int, height_px: int
@@ -324,11 +448,15 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                   prior_table: Optional[PriorTable] = None,
                   rng: Optional[random.Random] = None,
                   show_instructions: bool = True,
-                  on_trial: Optional[Callable[[dict], None]] = None) -> PerimetryOutcome:
-    """Run one eye on an already-open backend and return what it produced."""
+                  on_trial: Optional[Callable[[dict], None]] = None,
+                  fixation_monitor: Optional[FixationMonitor] = None) -> PerimetryOutcome:
+    """Run one eye on an already-open backend and return what it produced.
+
+    ``fixation_monitor`` overrides the one ``settings.fixation_monitoring`` names (tests
+    pass a scripted one)."""
     settings.validate()
     seen_key, abort_key, pause_key = settings.answer_key, settings.cancel_key, settings.pause_key
-    calibration = calibration or LuminanceCalibration.uncalibrated()
+    calibration = calibration or default_calibration(settings)
     if hasattr(backend, "fixation_colour"):
         backend.fixation_colour = settings.fixation_colour
     rng = rng or random.Random()
@@ -365,25 +493,48 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
 
     # -- stimulus ------------------------------------------------------------------------
     sigma = settings.diameter_degrees / 6.0
+    mean_luminance, background = background_for(settings, calibration)
     base = GaborParameters(settings.diameter_degrees, settings.spatial_frequency_cpd,
-                           settings.orientation_degrees, 0.0, sigma,
-                           settings.mean_luminance, 1.0)
-    floor = minimum_renderable_contrast(calibration, settings.mean_luminance)
-    background = float(calibration.brightness_for(settings.mean_luminance)) / 100.0
+                           settings.orientation_degrees, 0.0, sigma, mean_luminance, 1.0)
+    # Dithered patches are shown correctly on average below one grey step; the floor is
+    # then the search range, not the 8-bit step.
+    floor = (0.0 if settings.dithering
+             else minimum_renderable_contrast(calibration, mean_luminance))
     blank = np.full(render_brightness(base, calibration, ppd_x, ppd_y).shape, background)
     fixation = (centre, max(12.0, 0.5 * ppd_x))
+    noise = np.random.default_rng(rng.randrange(2 ** 32))
 
     def texture(x: float, y: float, contrast: float) -> Texture:
-        return Texture(render_brightness(base.with_contrast(contrast), calibration,
-                                         ppd_x, ppd_y), to_px(x, y))
+        image = render_brightness(base.with_contrast(contrast), calibration, ppd_x, ppd_y)
+        if settings.dithering:
+            image = dither_8bit(image, noise)
+        return Texture(image, to_px(x, y))
+
+    # -- fixation monitor ---------------------------------------------------------------
+    def to_deg(px: float, py: float) -> Tuple[float, float]:
+        return (math.degrees(math.atan((px - centre[0]) / screen.px_per_mm_x / d)),
+                math.degrees(math.atan((centre[1] - py) / screen.px_per_mm_y / d)))
+
+    monitor = fixation_monitor or monitor_for(settings.fixation_monitoring, settings.eye)
+    watching = settings.watches_gaze
+    p_blank, p_high, p_blind_spot = settings.catch_rates()
+    gaze_check: Dict[str, object] = {}
 
     # -- state -------------------------------------------------------------------------
-    points = [PerimetryPoint(i, float(x), float(y),
-                             ZestLocationThreshold(settings.zest, renderable_floor=floor))
-              for i, (x, y) in enumerate(kept)]
-    seeds = [p for p in points if (p.x_deg, p.y_deg) in settings.seed_points]
+    seed_set = {(float(x), float(y)) for x, y in settings.seed_points}
+    points = []
+    for i, (x, y) in enumerate(kept):
+        is_seed = (float(x), float(y)) in seed_set
+        points.append(PerimetryPoint(
+            i, float(x), float(y),
+            ZestLocationThreshold(zest_settings_for(settings, is_seed), renderable_floor=floor),
+            seed=is_seed))
+    seeds = [p for p in points if p.seed]
     counts = dict(trials=0, blank=0, false_alarms=0, high=0, misses=0, blind_spot=0,
-                  blind_spot_seen=0, dropped_frames=0)
+                  blind_spot_seen=0, dropped_frames=0, presentations=0, early_presses=0,
+                  retests=0, gaze_checked=0, fixation_breaks=0)
+    gaze_info: Dict[str, object] = {}      # about the last patch, for its trials.csv row
+    reaction_times: List[float] = []
     rows: List[dict] = []
     started = time.strftime("%Y-%m-%d %H:%M:%S")
     t0 = time.monotonic()
@@ -400,29 +551,130 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             if key == abort_key:
                 raise Aborted
 
-    def present(tex: Texture) -> Tuple[bool, float]:
-        """One presentation. Returns (seen, reaction ms from stimulus onset)."""
-        wait(settings.fixation_ms)
+    def response_window() -> float:
+        """SITA's timing: after a few answers the window follows this participant's
+        reaction times (mean + 2.5 SD), never above the set window."""
+        if not settings.adaptive_window or len(reaction_times) < 6:
+            return settings.response_window_ms
+        recent = reaction_times[-30:]
+        limit = float(np.mean(recent) + 2.5 * np.std(recent)) - display_ms
+        return float(np.clip(limit, settings.min_response_window_ms,
+                             settings.response_window_ms))
+
+    POLL_MS = 16.0
+
+    def wait_for_fixation() -> None:
+        """Hold the patch back until the eye has been on the + for ``fixation_hold_ms``.
+        Time is counted in the waits asked for, so a test without a screen runs at
+        full speed; on a real screen each wait is at least that long."""
+        held = waited = 0.0
+        while True:
+            g = monitor.current()
+            if g is not None and math.hypot(*g) <= settings.fixation_tolerance_deg:
+                held += POLL_MS
+                if held >= settings.fixation_hold_ms:
+                    return
+            else:
+                held = 0.0
+            waited += POLL_MS
+            if waited >= settings.fixation_wait_ms:
+                key = backend.show_screen(
+                    f"Please look at the  +  in the middle.\n\nPress {seen_key.upper()} "
+                    f"to go on   ({abort_key.upper()} stops).", keys=[seen_key, abort_key])
+                if key == abort_key:
+                    raise Aborted
+                counts["fixation_reminders"] = counts.get("fixation_reminders", 0) + 1
+                waited = held = 0.0
+            wait(POLL_MS)
+
+    def check_gaze_at_start() -> None:
+        """Before the test: is the tracker's gaze on the + when the person looks at it?
+        A large offset means the calibration is off."""
+        while True:
+            key = backend.show_screen(
+                "Eye tracker check.\n\nLook at the  +  in the middle and keep looking "
+                f"at it.\n\nPress {seen_key.upper()} when ready   ({abort_key.upper()} stops).",
+                keys=[seen_key, abort_key])
+            if key == abort_key:
+                raise Aborted
+            got = []
+            for _ in range(int(1500 / POLL_MS)):
+                got.append(monitor.current())
+                wait(POLL_MS)
+            valid = [g for g in got if g is not None]
+            frac = len(valid) / len(got)
+            offset = (float(np.median([math.hypot(*g) for g in valid])) if valid
+                      else float("nan"))
+            gaze_check.update(offset_deg=round(offset, 2) if valid else None,
+                              valid_fraction=round(frac, 2))
+            if frac >= 0.5 and offset <= settings.fixation_tolerance_deg / 2.0:
+                gaze_check["passed"] = True
+                return
+            gaze_check["passed"] = False
+            reason = ("the eye was not tracked" if frac < 0.5 else
+                      f"gaze is {offset:.1f} deg away from the +")
+            key = backend.show_screen(
+                f"Eye tracker check FAILED: {reason}.\n\nRecalibrate in Tobii Pro Eye "
+                "Tracker Manager (and check the chin rest and the eye patch).\n\n"
+                f"Press {seen_key.upper()} to check again   ({abort_key.upper()} stops).",
+                keys=[seen_key, abort_key])
+            if key == abort_key:
+                raise Aborted
+
+    def present(tex: Texture) -> Tuple[Optional[bool], float]:
+        """One presentation. Returns (seen, reaction ms from stimulus onset); seen is
+        None when the trial was thrown away because the eye left the +.
+
+        A press sooner than ``early_press_ms`` after onset cannot be an answer to this
+        patch (SITA counts it as a false positive): it is recorded, not taken as seen.
+        """
+        if settings.fixation_ms > 0:
+            wait(settings.fixation_ms)
+        if watching:
+            wait_for_fixation()
+        counts["presentations"] += 1
+        t_on = time.monotonic()
+        monitor.current()
         report = backend.present_train([tex], 0, stim_frames, fixation=fixation,
                                        response_keys=[seen_key, abort_key])
+        monitor.current()
+        t_off = time.monotonic()
+        monitor.patch_shown(t_on, t_off)
         counts["dropped_frames"] += report.dropped_frames
         if any(k == abort_key for k, _ in report.keys):
             raise Aborted
         presses = [t for k, t in report.keys if k == seen_key]
+        early = [t for t in presses if t < settings.early_press_ms]
+        presses = [t for t in presses if t >= settings.early_press_ms]
         if not presses:
-            key, latency = backend.wait_for_key([seen_key, abort_key],
-                                                settings.response_window_ms,
+            key, latency = backend.wait_for_key([seen_key, abort_key], response_window(),
                                                 fixation=fixation, clear_events=False)
             if key == abort_key:
                 raise Aborted
             if key == seen_key:
                 presses.append(display_ms + latency)
-        wait(rng.uniform(*settings.iti_ms))
-        return bool(presses), (presses[0] if presses else float("nan"))
+        if early:
+            counts["early_presses"] += 1
+        seen = bool(presses)
+
+        gaze_info.clear()
+        fixated = True
+        if watching:
+            fixated, worst, frac = judge_patch(monitor.between(t_on, t_off),
+                                               settings.fixation_tolerance_deg)
+            counts["gaze_checked"] += 1
+            counts["fixation_breaks"] += int(not fixated)
+            gaze_info.update(gaze_max_deg="" if math.isnan(worst) else round(worst, 2),
+                             gaze_valid_pct=round(100 * frac))
+
+        gap = rng.uniform(*settings.iti_ms) + (0.0 if seen else settings.miss_extra_pause_ms)
+        wait(gap)
+        return (seen if fixated else None), (presses[0] if presses else float("nan"))
 
     def log(kind: str, point: Optional[PerimetryPoint], x: Optional[float],
             y: Optional[float], contrast: float, seen: bool, rt: float, note: str = "") -> None:
-        rendered = (measure_contrast(base.with_contrast(contrast), calibration, ppd_x, ppd_y)
+        measure = nominal_contrast if settings.dithering else measure_contrast
+        rendered = (measure(base.with_contrast(contrast), calibration, ppd_x, ppd_y)
                     if contrast > 0 else 0.0)
         row = dict(trial=len(rows) + 1, ms_from_start=int((time.monotonic() - t0) * 1000),
                    kind=kind, point=point.index if point else "",
@@ -431,6 +683,8 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                    seen=int(seen), reaction_ms="" if math.isnan(rt) else round(rt, 1),
                    estimate_contrast=(round(10 ** point.zest.estimate_log, 5) if point else ""),
                    posterior_sd_log10=(round(point.zest.posterior_sd, 4) if point else ""),
+                   gaze_max_deg=gaze_info.get("gaze_max_deg", ""),
+                   gaze_valid_pct=gaze_info.get("gaze_valid_pct", ""),
                    note=note)
         rows.append(row)
         if on_trial is not None:
@@ -443,6 +697,7 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             p.prior_source = "none (pilot mode)"
             return
         guesses, sources = [], []
+        entry = None
         if use_table is not None:
             entry = use_table.lookup(settings.eye, p.x_deg, p.y_deg)
             if entry is not None:
@@ -456,13 +711,37 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             guesses.append(float(np.median(near)))
             sources.append(f"{len(near)} neighbours")
         if guesses:
-            p.zest.set_prior(float(np.mean(guesses)), settings.prior_sd_log,
-                             settings.prior_flat_weight)
+            p.expected_log = float(np.mean(guesses))
+            if settings.strategy == SITA_FAST:
+                p.zest.set_prior(p.expected_log, settings.fast_prior_sd_log,
+                                 settings.fast_prior_flat_weight,
+                                 settings.prior_abnormal_weight,
+                                 sd_better_log=settings.fast_prior_sd_better_log,
+                                 normal_log=entry)
+            else:
+                p.zest.set_prior(p.expected_log, settings.prior_sd_log,
+                                 settings.prior_flat_weight)
             p.prior_source = " + ".join(sources)
         else:
             p.prior_source = "none"
 
+    def needs_retest(p: PerimetryPoint) -> bool:
+        """SITA's second staircase: a result more than ``retest_log`` from its guess."""
+        if settings.strategy != SITA_FAST or p.expected_log is None or p.zest.retested:
+            return False
+        r = p.zest.result()
+        return r.valid and abs(math.log10(r.value) - p.expected_log) > settings.retest_log
+
+    monitor_started = False
     try:
+        if watching:
+            try:
+                monitor.begin(backend, to_deg)
+            except RuntimeError as e:
+                raise SessionError(f"Fixation monitor ({settings.fixation_monitoring}): {e}")
+            monitor_started = True
+        if watching and show_instructions:
+            check_gaze_at_start()
         if show_instructions:
             key = backend.show_screen(
                 f"Cover your {'LEFT' if settings.eye == 'R' else 'RIGHT'} eye.\n\n"
@@ -480,7 +759,8 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         for _ in range(settings.practice_trials):
             p = rng.choice(seeds or points)
             seen, rt = present(texture(p.x_deg, p.y_deg, settings.high_contrast))
-            log(PRACTICE, None, p.x_deg, p.y_deg, settings.high_contrast, seen, rt)
+            log(PRACTICE, None, p.x_deg, p.y_deg, settings.high_contrast, bool(seen), rt,
+                FIXATION_BREAK if seen is None else "")
 
         last = None
         while True:
@@ -494,38 +774,52 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             r = rng.random()
             high_candidates = [p for p in points if p.zest.finished() and p.zest.result().valid
                                and p.zest.result().value <= settings.high_catch_max_threshold]
-            if r < settings.p_blank:
+            if r < p_blank:
                 seen, rt = present(Texture(blank, centre))
-                counts["blank"] += 1
-                counts["false_alarms"] += int(seen)
-                log(BLANK, None, None, None, 0.0, seen, rt, "FALSE_ALARM" if seen else "")
-            elif r < settings.p_blank + settings.p_high and high_candidates:
+                if seen is not None:
+                    counts["blank"] += 1
+                    counts["false_alarms"] += int(seen)
+                log(BLANK, None, None, None, 0.0, bool(seen), rt,
+                    FIXATION_BREAK if seen is None else ("FALSE_ALARM" if seen else ""))
+            elif r < p_blank + p_high and high_candidates:
                 p = rng.choice(high_candidates)
                 seen, rt = present(texture(p.x_deg, p.y_deg, settings.high_contrast))
-                counts["high"] += 1
-                counts["misses"] += int(not seen)
-                log(HIGH, None, p.x_deg, p.y_deg, settings.high_contrast, seen, rt,
-                    "" if seen else "MISS")
-            elif (settings.fixation_monitoring != "none"
-                  and r < settings.p_blank + settings.p_high + settings.p_blind_spot):
+                if seen is not None:
+                    counts["high"] += 1
+                    counts["misses"] += int(not seen)
+                log(HIGH, None, p.x_deg, p.y_deg, settings.high_contrast, bool(seen), rt,
+                    FIXATION_BREAK if seen is None else ("" if seen else "MISS"))
+            elif p_blind_spot > 0 and r < p_blank + p_high + p_blind_spot:
                 bx, by = blind_spot_xy
                 seen, rt = present(texture(bx, by, settings.blind_spot_contrast))
-                counts["blind_spot"] += 1
-                counts["blind_spot_seen"] += int(seen)
-                log(BLIND_SPOT, None, bx, by, settings.blind_spot_contrast, seen, rt,
-                    "FIXATION_LOSS" if seen else "")
+                if seen is not None:
+                    counts["blind_spot"] += 1
+                    counts["blind_spot_seen"] += int(seen)
+                log(BLIND_SPOT, None, bx, by, settings.blind_spot_contrast, bool(seen), rt,
+                    FIXATION_BREAK if seen is None else ("FIXATION_LOSS" if seen else ""))
             else:
                 choices = [p for p in pending if p is not last] or pending
                 p = rng.choice(choices)
+                last = p
                 if not p.started:
                     start_point(p)
                 kind = PROBE_TRIAL if p.zest.probing else ZEST_TRIAL
                 contrast = p.zest.next_level()
                 seen, rt = present(texture(p.x_deg, p.y_deg, contrast))
-                p.zest.record(seen)
-                note = p.zest.result().termination.value if p.zest.finished() else ""
-                log(kind, p, p.x_deg, p.y_deg, contrast, seen, rt, note)
-                last = p
+                if seen is None:
+                    # The eye left the +: the answer says nothing about this point.
+                    log(kind, p, p.x_deg, p.y_deg, contrast, False, rt,
+                        FIXATION_BREAK + " (tested again later)")
+                else:
+                    if seen and not math.isnan(rt):
+                        reaction_times.append(rt)
+                    p.zest.record(seen)
+                    note = p.zest.result().termination.value if p.zest.finished() else ""
+                    if p.zest.finished() and needs_retest(p):
+                        p.zest.reopen()
+                        counts["retests"] += 1
+                        note = "RETEST (far from expected)"
+                    log(kind, p, p.x_deg, p.y_deg, contrast, seen, rt, note)
 
             counts["trials"] += 1
             if (settings.break_every_trials and counts["trials"] % settings.break_every_trials == 0
@@ -541,6 +835,24 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                     raise Aborted
     except Aborted:
         aborted = True
+    finally:
+        if monitor_started:
+            monitor.end()
+
+    # SITA's post-processing: every estimate again, with the false-answer rates this
+    # participant actually showed (blank presses + too-early presses; strong misses).
+    post: Dict[str, float] = {}
+    if settings.post_process and settings.strategy == SITA_FAST:
+        fp_opportunities = counts["blank"] + counts["presentations"]
+        fp = ((counts["false_alarms"] + counts["early_presses"]) / fp_opportunities
+              if fp_opportunities else settings.zest.guess)
+        fn = counts["misses"] / counts["high"] if counts["high"] else settings.zest.lapse
+        guess = max(settings.zest.guess, min(fp, 0.3))
+        lapse = max(settings.zest.lapse, min(fn, 0.3))
+        for p in points:
+            if p.zest.trials:
+                p.zest.recompute(guess, lapse)
+        post = dict(guess=round(guess, 4), lapse=round(lapse, 4))
 
     return PerimetryOutcome(
         settings=settings, points=points, dropped_points=dropped, trial_rows=rows,
@@ -550,7 +862,12 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                             ("not used (pilot mode)" if settings.pilot_mode else "none")),
         aborted=aborted, started=started, duration_s=time.monotonic() - t0,
         point_px={p.index: to_px(p.x_deg, p.y_deg) for p in points},
-        patch_radius_px=radius_px)
+        patch_radius_px=radius_px, background_cd_m2=mean_luminance, post_processing=post,
+        fixation_monitor=(monitor.describe() if watching else settings.fixation_monitoring),
+        gaze_check=gaze_check,
+        gaze_samples=([(round(t - t0, 4), None if g is None else round(g[0], 3),
+                        None if g is None else round(g[1], 3)) for t, g in monitor.samples]
+                      if watching else []))
 
 
 # ------------------------------------------------------------------------------
@@ -583,7 +900,8 @@ def categorise(outcome: PerimetryOutcome, p: PerimetryPoint,
 def summary_rows(outcome: PerimetryOutcome, table: Optional[PriorTable] = None) -> List[dict]:
     s = outcome.settings
     common = dict(participant=s.participant_id, eye=s.eye, pilot_mode=s.pilot_mode,
-                  extent=s.extent, session_valid=outcome.valid, method=ZEST)
+                  extent=s.extent, session_valid=outcome.valid,
+                  method=STRATEGY_NAMES.get(s.strategy, ZEST))
     rows = []
     for p in outcome.points:
         r = p.zest.result()
@@ -599,6 +917,8 @@ def summary_rows(outcome: PerimetryOutcome, table: Optional[PriorTable] = None) 
             estimate_contrast=round(10 ** p.zest.estimate_log, 5) if p.zest.trials else "",
             posterior_sd_log10=round(p.zest.posterior_sd, 4) if p.zest.trials else "",
             trials=r.trials, termination=r.termination.value, note=r.note,
+            seed_point=p.seed, retested=p.zest.retested,
+            early_stop=p.zest.early_stop,
             starting_guess=p.prior_source,
             starting_guess_contrast=(round(10 ** p.zest.prior_centre_log, 5)
                                      if p.zest.prior_centre_log is not None else "")))
@@ -611,8 +931,9 @@ FAILURE_REASONS = {
                     "Press only when you really see stripes.",
     "misses": "Strong, easy patches were missed (tired or not attending). "
               "Take a break before repeating.",
-    "fixation": "Blind-spot patches were seen. Check the other eye is FULLY covered "
-                "(opaque patch), the right eye was chosen, and keep looking at the +.",
+    "fixation": "The eye left the + too often (or blind-spot patches were seen). Check "
+                "the other eye is FULLY covered, the chin rest, and the eye tracker "
+                "calibration; remind the participant to keep looking at the +.",
     "completed": "The test was stopped before the end.",
 }
 
@@ -633,7 +954,8 @@ def results_text(outcome: PerimetryOutcome, offer_keys: bool = False) -> str:
         f"{outcome.duration_s / 60:.1f} min",
         f"False presses {rate(outcome.false_alarm_rate)} [{tick[c['false_alarms']]}]   "
         f"Misses {rate(outcome.miss_rate)} [{tick[c['misses']]}]   "
-        f"Blind-spot seen {rate(outcome.fixation_loss_rate)} [{tick[c['fixation']]}]",
+        + (f"Eye left the + {rate(outcome.fixation_loss_rate)}" if s.watches_gaze else
+         f"Blind-spot seen {rate(outcome.fixation_loss_rate)}") + f" [{tick[c['fixation']]}]",
     ]
     if outcome.valid:
         lines.append("SESSION VALID")
@@ -691,65 +1013,50 @@ def results_marks(outcome: PerimetryOutcome, table: Optional[PriorTable] = None)
     return marks
 
 
+def _meta(outcome: PerimetryOutcome) -> dict:
+    """What session.json holds about the run (also what the maps' headings use)."""
+    s = outcome.settings
+    return dict(
+        kind="perimetry", started=outcome.started, duration_s=round(outcome.duration_s, 1),
+        aborted=outcome.aborted, session_valid=outcome.valid, checks=outcome.checks,
+        false_alarm_rate=outcome.false_alarm_rate, miss_rate=outcome.miss_rate,
+        fixation_loss_rate=outcome.fixation_loss_rate, counts=outcome.counts,
+        fixation_monitor=outcome.fixation_monitor, gaze_check=outcome.gaze_check,
+        measured_refresh_hz=outcome.measured_refresh_hz,
+        screen=dict(resolution=[outcome.screen.resolution_x, outcome.screen.resolution_y],
+                    width_mm=outcome.screen.width_mm, height_mm=outcome.screen.height_mm,
+                    viewing_distance_mm=outcome.screen.viewing_distance_mm,
+                    field_degrees=[outcome.screen.field_degrees_x,
+                                   outcome.screen.field_degrees_y]),
+        calibration=dict(source=outcome.calibration_source, calibrated=outcome.calibrated),
+        strategy=STRATEGY_NAMES.get(s.strategy, s.strategy),
+        background_cd_m2=round(outcome.background_cd_m2, 3),
+        dithering=s.dithering,
+        early_press_rate=outcome.early_press_rate,
+        post_processing=outcome.post_processing,
+        prior_table=outcome.prior_table_source,
+        blind_spot_grid_points_dropped=outcome.dropped_points,
+        honest_limits=[
+            "Timing is software self-report, not photodiode-validated.",
+            "Contrast is nominal unless the luminance scale was photometer-measured.",
+        ],
+        settings=dataclasses.asdict(s),
+    )
+
+
 def draw_map(outcome: PerimetryOutcome, path: pathlib.Path,
              table: Optional[PriorTable] = None) -> pathlib.Path:
-    """The map as a picture: field degrees, x right, y up, as on a clinical printout."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Patch, Rectangle
-
-    s = outcome.settings
-    xs, ys = _layout(outcome)
-    col = {x: i for i, x in enumerate(xs)}
-    row = {y: len(ys) - 1 - j for j, y in enumerate(ys)}       # top row highest
-    fig, ax = plt.subplots(figsize=(1.0 + 0.85 * len(xs), 1.6 + 0.85 * len(ys)), dpi=120)
-    for p in outcome.points:
-        cat = categorise(outcome, p, table)
-        cx, cy = col[p.x_deg], row[p.y_deg]
-        ax.add_patch(Rectangle((cx - 0.45, cy - 0.45), 0.9, 0.9,
-                               facecolor=_MAP_COLOURS[cat], edgecolor="white"))
-        ax.text(cx, cy + 0.1, _label(outcome, p, cat), ha="center", va="center",
-                fontsize=8, color="white")
-        ax.text(cx, cy - 0.25, f"n={p.zest.trials}", ha="center", va="center",
-                fontsize=6, color="white")
-    for x, y in outcome.dropped_points:
-        cx, cy = col[float(x)], row[float(y)]
-        ax.add_patch(Rectangle((cx - 0.45, cy - 0.45), 0.9, 0.9, facecolor="#D3D1C7",
-                               edgecolor="white"))
-        ax.text(cx, cy, "blind\nspot", ha="center", va="center", fontsize=6, color="#444441")
-    mid_x = (len(xs) - 1) / 2.0        # the grid has no zero column or row
-    mid_y = (len(ys) - 1) / 2.0
-    ax.axvline(mid_x, color="#444441", lw=0.8)
-    ax.axhline(mid_y, color="#444441", lw=0.8)
-    ax.plot(mid_x, mid_y, marker="+", color="black", ms=12, mew=2)
-    ax.set_xlim(-0.6, len(xs) - 0.4)
-    ax.set_ylim(-0.6, len(ys) - 0.4)
-    ax.set_aspect("equal")
-    ax.set_xticks(range(len(xs)), [f"{x:g}" for x in xs])
-    ax.set_yticks(range(len(ys)), [f"{y:g}" for y in reversed(ys)])
-    ax.tick_params(length=0, labelsize=8)
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-    ax.set_xlabel("degrees from fixation (left  -  right)")
-    ax.set_ylabel("degrees (down  -  up)")
-    status = "VALID" if outcome.valid else "NOT VALID"
-    ax.set_title(f"{s.participant_id}  -  {s.eye} eye  -  {status}"
-                 f"{'  -  pilot mode' if s.pilot_mode else ''}"
-                 f"{'' if outcome.calibrated else '  -  contrast nominal (uncalibrated)'}",
-                 fontsize=10)
-    ax.legend(handles=[Patch(color=_MAP_COLOURS[k], label=k.replace("_", " "))
-                       for k in (SEEN, WEAK, BLIND, NOT_FINISHED)],
-              loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=4, frameon=False)
-    fig.tight_layout()
-    fig.savefig(path)
-    plt.close(fig)
-    return path
+    """The grid map as a picture (see ``maps.draw_grid_map``)."""
+    from specvis.procedure import maps
+    rows = summary_rows(outcome, table)
+    meta = json.loads(json.dumps(_meta(outcome), default=str))
+    return maps.draw_grid_map(rows, path, meta=meta)
 
 
 def write_outputs(outcome: PerimetryOutcome, directory: pathlib.Path,
                   table: Optional[PriorTable] = None) -> pathlib.Path:
-    """trials.csv, summary.csv, session.json and map.png. Returns the folder."""
+    """trials.csv, summary.csv, session.json, map.png (grid) and contour_map.png, and
+    gaze.csv when gaze was watched. Returns the folder."""
     directory = pathlib.Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -762,28 +1069,13 @@ def write_outputs(outcome: PerimetryOutcome, directory: pathlib.Path,
             writer.writerows(rows)
 
     write_csv("trials.csv", outcome.trial_rows)
+    if outcome.gaze_samples:
+        write_csv("gaze.csv", [dict(seconds=t, x_deg="" if x is None else x,
+                                    y_deg="" if y is None else y)
+                               for t, x, y in outcome.gaze_samples])
     write_csv("summary.csv", summary_rows(outcome, table))
-    s = outcome.settings
-    meta = dict(
-        kind="perimetry", started=outcome.started, duration_s=round(outcome.duration_s, 1),
-        aborted=outcome.aborted, session_valid=outcome.valid, checks=outcome.checks,
-        false_alarm_rate=outcome.false_alarm_rate, miss_rate=outcome.miss_rate,
-        fixation_loss_rate=outcome.fixation_loss_rate, counts=outcome.counts,
-        measured_refresh_hz=outcome.measured_refresh_hz,
-        screen=dict(resolution=[outcome.screen.resolution_x, outcome.screen.resolution_y],
-                    width_mm=outcome.screen.width_mm, height_mm=outcome.screen.height_mm,
-                    viewing_distance_mm=outcome.screen.viewing_distance_mm,
-                    field_degrees=[outcome.screen.field_degrees_x,
-                                   outcome.screen.field_degrees_y]),
-        calibration=dict(source=outcome.calibration_source, calibrated=outcome.calibrated),
-        prior_table=outcome.prior_table_source,
-        blind_spot_grid_points_dropped=outcome.dropped_points,
-        honest_limits=[
-            "Timing is software self-report, not photodiode-validated.",
-            "Contrast is nominal unless the luminance scale was photometer-measured.",
-        ],
-        settings=dataclasses.asdict(s),
-    )
-    (directory / "session.json").write_text(json.dumps(meta, indent=2, default=str) + "\n")
-    draw_map(outcome, directory / "map.png", table)
+    (directory / "session.json").write_text(
+        json.dumps(_meta(outcome), indent=2, default=str) + "\n")
+    from specvis.procedure import maps
+    maps.save_session_maps(directory)          # map.png and contour_map.png
     return directory

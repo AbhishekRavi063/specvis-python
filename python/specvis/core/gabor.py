@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Tuple
 
 import numpy as np
 
@@ -137,6 +138,47 @@ def render_brightness(p: GaborParameters, calibration: LuminanceCalibration,
     field = luminance_field(p, px_per_degree_x, px_per_degree_y)
     brightness = calibration.brightness_for(field) / 100.0
     return np.clip(brightness, 0.0, 1.0)
+
+
+def dither_8bit(brightness: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Noisy-bit dithering (Allard & Faubert 2008, Behav Res Methods 40:735).
+
+    Each pixel is rounded up or down to a neighbouring 8-bit level at random, with the
+    probability that keeps its *average* exact. Contrasts finer than one grey step --
+    which a dark background needs -- are then shown correctly on average, the noise
+    being far too fine to see. Pixels already on an 8-bit level (the background, and the
+    patch's own edge) are left exactly as they are, so no noisy square appears.
+    """
+    levels = np.asarray(brightness, dtype=float) * 255.0
+    exact = np.isclose(levels, np.round(levels), atol=0.01)
+    noisy = np.floor(levels + rng.random(levels.shape))
+    out = np.where(exact, np.round(levels), noisy)
+    return np.clip(out, 0.0, 255.0) / 255.0
+
+
+def snap_background(calibration: LuminanceCalibration, target_luminance: float
+                    ) -> Tuple[float, float]:
+    """(mean luminance, brightness 0-1) of the 8-bit grey level nearest the target.
+
+    The patch's mean must equal the background exactly, or a dithered patch would show
+    a faint square; so the background is put on a real 8-bit level first.
+    """
+    level = round(float(calibration.brightness_for(target_luminance)) / 100.0 * 255.0)
+    level = min(255, max(0, level))
+    brightness = level / 255.0
+    return float(calibration.luminance_at(brightness * 100.0)), brightness
+
+
+def nominal_contrast(p: GaborParameters, calibration: LuminanceCalibration,
+                     px_per_degree_x: float, px_per_degree_y: float) -> float:
+    """Michelson contrast of the patch as drawn *before* 8-bit rounding: what a
+    dithered patch shows on average."""
+    brightness = render_brightness(p, calibration, px_per_degree_x, px_per_degree_y)
+    luminance = calibration.luminance_at(brightness * 100.0)
+    l_min, l_max = float(luminance.min()), float(luminance.max())
+    if l_min + l_max <= 0:
+        return 0.0
+    return (l_max - l_min) / (l_max + l_min)
 
 
 def measure_contrast(p: GaborParameters, calibration: LuminanceCalibration,

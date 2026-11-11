@@ -5,6 +5,7 @@ rem     python\specvis.bat setup        create python\.venv (needs Python 3.11 i
 rem     python\specvis.bat app          the ReFreM perimetry app
 rem     python\specvis.bat perimetry    one eye, simple dialog instead of the app
 rem     python\specvis.bat build-table  normal table from the pilot sessions
+rem     python\specvis.bat redraw-maps  redraw the maps of saved sessions
 rem     python\specvis.bat test         every check in python\tests
 rem
 rem Results are saved in python\output\ (never on GitHub).
@@ -22,8 +23,9 @@ if /I "%~1"=="app"         ( "%PY%" "%HERE%run_app.py" & exit /b )
 if /I "%~1"=="app-simple"  ( "%PY%" "%HERE%run_app.py" --simple & exit /b )
 if /I "%~1"=="perimetry"   ( "%PY%" "%HERE%run_perimetry.py" & exit /b )
 if /I "%~1"=="build-table" ( "%PY%" "%HERE%build_prior_table.py" %2 %3 %4 %5 & exit /b )
+if /I "%~1"=="redraw-maps" ( "%PY%" "%HERE%redraw_maps.py" %2 %3 %4 %5 & exit /b )
 if /I "%~1"=="test"        ( "%PY%" "%HERE%run_tests.py" & exit /b )
-echo usage: python\specvis.bat {setup^|app^|app-simple^|perimetry^|build-table^|test}
+echo usage: python\specvis.bat {setup^|app^|app-simple^|perimetry^|build-table^|redraw-maps^|test}
 exit /b 2
 
 :setup

@@ -535,7 +535,7 @@ class MainWindow(QMainWindow):
         s = self.settings
         self.extent_box = QComboBox()
         self.extent_box.addItems([FULL, CENTRAL])
-        self.pilot = QCheckBox("Pilot mode (first 3-5 healthy people: no starting guesses, "
+        self.pilot = QCheckBox("Pilot mode (the 15-20 table people: no starting guesses, "
                                "builds the normal table)")
         self.sd_stop = _spin(0.05, 0.5, s.zest.sd_stop, 0.01, 2, "log10")
         self.min_trials = _ispin(1, 20, s.zest.min_trials)
@@ -866,7 +866,8 @@ class MainWindow(QMainWindow):
         table, messages = build_prior_table(summaries)
         if not table.entries:
             QMessageBox.information(self, "Normal table",
-                                    "No valid sessions to build from:\n\n" + "\n".join(messages))
+                                    "No valid ZEST (full) pilot-mode sessions to build "
+                                    "from:\n\n" + "\n".join(messages))
             return
         table.save(self.prior_table_file)
         people = max(e.n_participants for e in table.entries.values())

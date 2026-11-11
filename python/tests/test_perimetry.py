@@ -18,16 +18,17 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from specvis.procedure.perimetry import (BLIND, CENTRAL, FULL, SEEN, PerimetrySettings,  # noqa: E402
-                                         categorise, grid_points, results_marks,
+from specvis.procedure.perimetry import (BLIND, CENTRAL, FULL, SEEN, ZEST_FULL,  # noqa: E402
+                                         PerimetrySettings, categorise, grid_points, results_marks,
                                          run_perimetry, summary_rows, write_outputs)
 from specvis.procedure.prior_table import PriorTable, build_prior_table  # noqa: E402
 from specvis.procedure.session import SessionError  # noqa: E402
 from specvis.stimulus.backend import NullBackend  # noqa: E402
+from sim_observer import (DIST_MM, H, W, WIDTH_MM, Observer, healthy,  # noqa: E402
+                          right_hemianopia, run)
 
+ZEST_TABLE = dict(strategy=ZEST_FULL)    # how the table people are tested
 ok = True
-W, H = 3024, 1964                      # 14-inch MacBook Pro, full screen
-WIDTH_MM, DIST_MM = 302.0, 350.0
 
 
 def require(condition: bool, what: str) -> None:
@@ -35,71 +36,6 @@ def require(condition: bool, what: str) -> None:
     print(("  ok   " if condition else "  FAIL ") + what)
     if not condition:
         ok = False
-
-
-def healthy(x: float, y: float) -> float:
-    return math.log10(0.02 + 0.004 * math.hypot(x, y))
-
-
-def right_hemianopia(x: float, y: float):
-    return None if x > 0 else healthy(x, y)          # right half blind
-
-
-class Observer(NullBackend):
-    """Sees a patch by a Weibull on its rendered contrast at its field position."""
-
-    def __init__(self, threshold, rng, false_alarm=0.02, lapse=0.02,
-                 sees_blind_spot=False, abort_after=None, eye="R"):
-        super().__init__(refresh_hz=120.0)
-        self.threshold, self.rng = threshold, rng
-        self.false_alarm, self.lapse = false_alarm, lapse
-        self.sees_blind_spot, self.abort_after, self.eye = sees_blind_spot, abort_after, eye
-        self.shown = []
-
-    def field_deg(self, px, py):
-        mm_x, mm_y = (px - W / 2) * WIDTH_MM / W, (H / 2 - py) * WIDTH_MM / W
-        return (math.degrees(math.atan(mm_x / DIST_MM)), math.degrees(math.atan(mm_y / DIST_MM)))
-
-    def present_train(self, polarities, frames_per_reversal, total_frames,
-                      fixation=None, response_keys=()):
-        report = super().present_train(polarities, frames_per_reversal, total_frames,
-                                       fixation, response_keys)
-        b = polarities[0].brightness
-        c = float((b.max() - b.min()) / (b.max() + b.min()))
-        x, y = self.field_deg(*polarities[0].centre_px)
-        self.shown.append((round(x, 1), round(y, 1), c))
-        if self.abort_after is not None and len(self.shown) > self.abort_after:
-            report.keys = [("escape", 10.0)]
-            return report
-        temporal = x if self.eye == "R" else -x
-        in_blind_spot = 13.0 <= temporal <= 18.0 and -4.0 <= y <= 1.0
-        if c < 1e-6:
-            p = self.false_alarm
-        elif in_blind_spot and not self.sees_blind_spot:
-            p = self.false_alarm
-        else:
-            t = self.threshold(x, y)
-            p = self.false_alarm if t is None else self.false_alarm + (
-                1 - self.false_alarm - self.lapse) * (1 - math.exp(-10 ** (3.5 * (math.log10(c) - t))))
-        if self.rng.random() < p:
-            report.keys = [("space", 350.0)]
-        return report
-
-    def wait_for_key(self, keys, timeout_ms, fixation=None, clear_events=True):
-        return (None, None)
-
-
-def run(threshold, seed, eye="R", **kw):
-    settings = PerimetrySettings(participant_id=kw.pop("pid", f"SIM{seed}"), eye=eye,
-                                 screen_width_mm=WIDTH_MM, viewing_distance_mm=DIST_MM,
-                                 pilot_mode=kw.pop("pilot_mode", True),
-                                 extent=kw.pop("extent", FULL))
-    table = kw.pop("table", None)
-    obs = Observer(threshold, random.Random(seed), eye=eye, **kw)
-    obs.open(W, H, 0.5)
-    out = run_perimetry(settings, obs, prior_table=table, rng=random.Random(seed),
-                        show_instructions=False)
-    return out, obs
 
 
 print("1. the grid")
@@ -166,7 +102,7 @@ out, _ = run(right_hemianopia, 6)
 with tempfile.TemporaryDirectory() as tmp:
     folder = write_outputs(out, pathlib.Path(tmp) / "s")
     names = sorted(p.name for p in folder.iterdir())
-    require(names == ["map.png", "session.json", "summary.csv", "trials.csv"], f"files {names}")
+    require(names == ["contour_map.png", "map.png", "session.json", "summary.csv", "trials.csv"], f"files {names}")
     require((folder / "map.png").stat().st_size > 10_000, "map.png has content")
     rows = list(csv.DictReader((folder / "summary.csv").open()))
     require(len(rows) == len(out.points), "summary.csv: one row per point")
@@ -181,15 +117,31 @@ with tempfile.TemporaryDirectory() as tmp:
     tmp = pathlib.Path(tmp)
     paths = []
     for i, (pid, eye) in enumerate([("A", "R"), ("A", "L"), ("B", "R"), ("C", "L")]):
-        o, _ = run(healthy, 10 + i, eye=eye, pid=pid)
+        o, _ = run(healthy, 10 + i, eye=eye, pid=pid, settings_overrides=ZEST_TABLE)
         paths.append(write_outputs(o, tmp / f"{pid}_{eye}") / "summary.csv")
-    bad, _ = run(healthy, 20, false_alarm=0.4, pid="D")
+    bad, _ = run(healthy, 20, false_alarm=0.4, pid="D", settings_overrides=ZEST_TABLE)
     paths.append(write_outputs(bad, tmp / "D_R") / "summary.csv")
+    fast, _ = run(healthy, 21, pid="E")                      # SITA Fast, pilot mode on
+    paths.append(write_outputs(fast, tmp / "E_R") / "summary.csv")
     table, messages = build_prior_table(paths)
     require(any("not valid" in m for m in messages), "an invalid session is skipped")
+    require(any("E_R" in m and "not ZEST (full)" in m for m in messages),
+            "a SITA Fast session is not used for the table (the plan: ZEST (full) only)")
     people = max(e.n_participants for e in table.entries.values())
     require(people == 3, f"3 people, not 4 eyes (got {people})")
     saved = PriorTable.load(table.save(tmp / "prior_table.csv"))
+    header = [l for l in (tmp / "prior_table.csv").read_text().splitlines()
+              if not l.startswith("#")][0]
+    require("normal_db" in header and "mean_log10" not in header,
+            "the table file is written in dB")
+    require(all(abs(saved.entries[k].mean_log10 - e.mean_log10) < 1e-4
+                for k, e in table.entries.items()),
+            "reading the dB file back gives the same normal values")
+    old = tmp / "old_log10_table.csv"
+    old.write_text("x_temporal_deg,y_deg,n_participants,n_sessions,mean_log10,sd_log10,"
+                   "mean_contrast,raw_mean_log10,hill_log10\n9.0,7.0,3,3,-1.2,0.1,0.063,-1.21,-1.2\n")
+    require(abs(PriorTable.load(old).lookup("R", 9, 7) + 1.2) < 1e-12,
+            "older tables saved in log10 still load")
     r_guess, l_guess = saved.lookup("R", 9, 7), saved.lookup("L", -9, 7)
     require(r_guess is not None and r_guess == l_guess,
             "the right eye's (9,7) and the left eye's (-9,7) are the same temporal point")

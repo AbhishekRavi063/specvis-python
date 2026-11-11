@@ -7,6 +7,7 @@
 #     python/specvis.sh run       settings dialog, a threshold session, the results map
 #     python/specvis.sh perimetry one eye of monocular perimetry, the visual-field map
 #     python/specvis.sh build-table  normal table from the pilot perimetry sessions
+#     python/specvis.sh redraw-maps  redraw the grid and contour maps of saved sessions
 #     python/specvis.sh test      run every check in python/tests
 #     python/specvis.sh display   measure the screen: refresh rate, reversal rates, drops
 #     python/specvis.sh setup     create python/.venv from requirements.txt (Python 3.11)
@@ -52,6 +53,11 @@ case "${1:-}" in
         shift
         exec "$PY" "$HERE/build_prior_table.py" "$@"
         ;;
+    redraw-maps)
+        need_venv
+        shift
+        exec "$PY" "$HERE/redraw_maps.py" "$@"
+        ;;
     test)
         need_venv
         exec "$PY" "$HERE/run_tests.py"
@@ -69,7 +75,7 @@ case "${1:-}" in
         echo "Done. Try:  python/specvis.sh test"
         ;;
     *)
-        echo "usage: python/specvis.sh {app|app-simple|run|perimetry|build-table|test|display|setup}" >&2
+        echo "usage: python/specvis.sh {app|app-simple|run|perimetry|build-table|redraw-maps|test|display|setup}" >&2
         exit 2
         ;;
 esac
