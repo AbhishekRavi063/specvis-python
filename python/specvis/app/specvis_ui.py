@@ -850,10 +850,17 @@ class FixMonitorDialog(QDialog):
         self.below = _spin(-5.0, 5.0, s.blind_spot_below_deg, 0.5, 1, "deg")
         self.contrast = _spin(0.1, 1.0, s.blind_spot_contrast, 0.05, 2)
         self.share = _spin(1.0, 20.0, 100 * s.p_blind_spot, 1.0, 0, "% of trials")
+        self.search = QCheckBox("Find each person's blind spot at the start")
+        self.search.setChecked(s.blind_spot_search)
+        self.search.setToolTip("As the Humphrey does: before the test, the patch is flashed "
+                               "at the average position and then at nearby ones until one is "
+                               "missed twice; the checks then use that position. Off = the "
+                               "average position for everyone.")
         self.limit = _spin(0.0, 100.0, 100 * s.max_fixation_loss_rate, 5.0, 0, "%")
         self.tolerance = _spin(1.0, 5.0, s.fixation_tolerance_deg, 0.5, 1, "deg")
         self.hold = _spin(0.0, 1000.0, s.fixation_hold_ms, 50.0, 0, "ms")
         form.addRow(_label("Blind spot (Heijl-Krakau)", "note"))
+        form.addRow(self.search)
         form.addRow("Blindspot distance from fix. point X (temporal)", self.temporal)
         form.addRow("Blindspot distance from fix. point Y (below)", self.below)
         form.addRow("Catch stimulus contrast", self.contrast)
@@ -873,7 +880,8 @@ class FixMonitorDialog(QDialog):
         form.addRow(b)
 
     def values(self) -> dict:
-        return dict(blind_spot_temporal_deg=self.temporal.value(),
+        return dict(blind_spot_search=self.search.isChecked(),
+                    blind_spot_temporal_deg=self.temporal.value(),
                     blind_spot_below_deg=self.below.value(),
                     blind_spot_contrast=self.contrast.value(),
                     p_blind_spot=self.share.value() / 100.0,

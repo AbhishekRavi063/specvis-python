@@ -87,6 +87,7 @@ EXTENTS = (FULL, CENTRAL)
 # Point and trial kinds, as written to trials.csv
 ZEST_TRIAL, PROBE_TRIAL = "zest", "zest_probe_max"
 BLANK, HIGH, BLIND_SPOT, PRACTICE = "blank_catch", "high_catch", "blind_spot", "practice"
+BLIND_SPOT_SEARCH, SEARCH_CHECK = "blind_spot_search", "blind_spot_search_check"
 FIXATION_BREAK = "FIXATION_BREAK"
 
 # Strategies
@@ -145,6 +146,12 @@ class PerimetrySettings:
     blind_spot_contrast: float = 0.80
     blind_spot_temporal_deg: float = 15.5  # Rohrschneider 2004: 15.5 deg temporal,
     blind_spot_below_deg: float = 1.5      # 1.5 deg below fixation
+    #: Find this person's blind spot before the test (as the Humphrey does), starting at
+    #: the average position above, instead of using the average for everyone (Padmini).
+    blind_spot_search: bool = True
+    blind_spot_search_step_deg: float = 1.5   # spacing of the positions tried
+    blind_spot_search_repeats: int = 2        # a position must be missed this many times
+    blind_spot_search_attempts: int = 3       # searches before the average is used
     max_false_alarm_rate: float = 0.15
     max_miss_rate: float = 0.10
     max_fixation_loss_rate: float = 0.20
@@ -200,6 +207,10 @@ class PerimetrySettings:
             raise SessionError("catch trials must be under half of all trials")
         if self.stimulus_ms <= 0 or self.viewing_distance_mm <= 0 or self.screen_width_mm <= 0:
             raise SessionError("stimulus time, distance and screen width must be positive")
+        if (self.blind_spot_search_repeats < 1 or self.blind_spot_search_attempts < 1
+                or self.blind_spot_search_step_deg <= 0):
+            raise SessionError("the blind-spot search needs at least 1 repeat, 1 attempt "
+                               "and a positive step")
 
     @property
     def watches_gaze(self) -> bool:
@@ -296,6 +307,9 @@ class PerimetryOutcome:
     fixation_monitor: str = ""
     gaze_check: Dict[str, object] = field(default_factory=dict)
     gaze_samples: List[Tuple[float, Optional[float], Optional[float]]] = field(default_factory=list)
+    #: Where the blind-spot catch trials went (found by the search, or the average).
+    blind_spot_xy: Optional[Tuple[float, float]] = None
+    blind_spot_search: Dict[str, object] = field(default_factory=dict)
 
     @property
     def early_press_rate(self) -> float:
@@ -354,9 +368,32 @@ class PerimetryOutcome:
 
 
 def blind_spot_position(settings: PerimetrySettings) -> Tuple[float, float]:
-    """Where the blind-spot catch trials go, in field degrees (x right, y up)."""
+    """The average blind spot (where the search starts), in field degrees (x right,
+    y up)."""
     return (settings.temporal_sign * settings.blind_spot_temporal_deg,
             -settings.blind_spot_below_deg)
+
+
+def blind_spot_candidates(settings: PerimetrySettings) -> List[Tuple[float, float]]:
+    """The positions the blind-spot search tries, nearest the average first.
+
+    A grid ``blind_spot_search_step_deg`` apart, up to two steps each way from the
+    average (a 5 x 5 square without its corners), kept where blind spots lie: 11-20 deg
+    temporal, at most 1 deg above the + (the blind spot is centred slightly below it).
+    With the defaults: 18 positions, 12.5 to 18.5 deg temporal and 0 to 4.5 deg below.
+    """
+    x0, y0 = blind_spot_position(settings)
+    step, sign = settings.blind_spot_search_step_deg, settings.temporal_sign
+    found = []
+    for i in range(-2, 3):
+        for j in range(-2, 3):
+            if abs(i) == abs(j) == 2:          # a 5 x 5 square without its corners
+                continue
+            x, y = x0 + sign * i * step, y0 + j * step
+            if 11.0 <= sign * x <= 20.0 and y <= 1.0:
+                found.append((round(x, 3), round(y, 3)))
+    return sorted(found, key=lambda p: (round(math.hypot(p[0] - x0, p[1] - y0), 6),
+                                        abs(p[1] - y0), p))
 
 
 def background_for(settings: PerimetrySettings, calibration: LuminanceCalibration
@@ -407,7 +444,10 @@ def fit_problem(settings: PerimetrySettings, width_px: int, height_px: int) -> O
     radius_mm = d * math.radians(settings.diameter_degrees / 2.0)   # central scale
     kept, _ = grid_points(settings)
     hx, hy = field_half_degrees(settings, width_px, height_px)
-    for x, y in kept + [blind_spot_position(settings)]:
+    extra = [blind_spot_position(settings)]
+    if settings.blind_spot_search and settings.fixation_monitoring == FIX_BLIND_SPOT:
+        extra = blind_spot_candidates(settings)
+    for x, y in kept + extra:
         mx = abs(d * math.tan(math.radians(x)))
         my = abs(d * math.tan(math.radians(y)))
         if mx + radius_mm > half_w_mm or my + radius_mm > half_h_mm:
@@ -732,6 +772,108 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         r = p.zest.result()
         return r.valid and abs(math.log10(r.value) - p.expected_log) > settings.retest_log
 
+    search: Dict[str, object] = {}
+
+    def search_blind_spot() -> None:
+        """Find this person's blind spot, as the Humphrey does before its test.
+
+        The average position first: missed ``blind_spot_search_repeats`` times, it is
+        the blind spot (most people). Seen, all 17 nearby positions are tried (each until
+        seen, or missed that many times) and the missed one nearest the middle of all the
+        missed ones is used, so the patch sits well inside the blind spot, not on its
+        edge. After every other search patch a strong patch at a test point keeps the
+        person pressing, alternately on the blind spot's side and the other side: if the
+        blind spot's side misses them all while the other side sees, that half is
+        probably blind (hemianopia) and the blind-spot checks cannot show fixation.
+        Not found: search again or use the average position (the operator chooses).
+        """
+        nonlocal blind_spot_xy
+        temporal = [p for p in points if p.x_deg * settings.temporal_sign > 0]
+        nasal = [p for p in points if p.x_deg * settings.temporal_sign < 0]
+        candidates = blind_spot_candidates(settings)
+        attempts = 0
+        while True:
+            attempts += 1
+            shown = {"temporal": 0, "nasal": 0}
+            seen_n = {"temporal": 0, "nasal": 0}
+            flashes = 0
+            side = "temporal"
+
+            def check(which: str) -> None:
+                pool = temporal if which == "temporal" else nasal
+                if not pool:
+                    return
+                q = rng.choice(pool)
+                seen, rt = present(texture(q.x_deg, q.y_deg, settings.high_contrast))
+                shown[which] += 1
+                seen_n[which] += int(bool(seen))
+                log(SEARCH_CHECK, None, q.x_deg, q.y_deg, settings.high_contrast,
+                    bool(seen), rt, f"{which} side")
+
+            def missed_every_time(x: float, y: float) -> bool:
+                nonlocal flashes, side
+                for _ in range(settings.blind_spot_search_repeats):
+                    seen, rt = present(texture(x, y, settings.blind_spot_contrast))
+                    flashes += 1
+                    log(BLIND_SPOT_SEARCH, None, x, y, settings.blind_spot_contrast,
+                        bool(seen), rt, f"attempt {attempts}")
+                    if flashes % 2 == 1:          # a strong patch after every other one
+                        check(side)
+                        side = "nasal" if side == "temporal" else "temporal"
+                    if seen:
+                        return False
+                return True
+
+            found = None
+            if missed_every_time(*candidates[0]):         # the average: most people
+                found = candidates[0]
+            else:
+                missed = [c for c in candidates[1:] if missed_every_time(*c)]
+                if missed:                                # the middle of the missed ones
+                    mx = sum(x for x, _ in missed) / len(missed)
+                    my = sum(y for _, y in missed) / len(missed)
+                    found = min(missed, key=lambda c: (math.hypot(c[0] - mx, c[1] - my), c))
+                    search["positions_missed"] = [list(c) for c in missed]
+            while temporal and shown["temporal"] < 2:
+                check("temporal")
+            while nasal and shown["nasal"] < 1:
+                check("nasal")
+            search.update(attempts=attempts, search_patches=flashes,
+                          strong_patches={k: f"{seen_n[k]}/{shown[k]} seen" for k in shown})
+            blind_side = (shown["temporal"] >= 2 and seen_n["temporal"] == 0
+                          and seen_n["nasal"] >= 1)
+            search["blind_spot_side_not_seen"] = blind_side
+            if found is not None:
+                blind_spot_xy = found
+                search.update(status="found", found_xy=list(found))
+                break
+            if attempts >= settings.blind_spot_search_attempts:
+                key = seen_key
+            else:
+                key = backend.show_screen(
+                    "Blind spot NOT found: every position tried was seen.\n\n"
+                    "Check that the other eye is FULLY covered, the chin rest, and that "
+                    "the participant keeps looking at the  +.\n\n"
+                    f"R = search again     {seen_key.upper()} = go on with the average "
+                    f"position   ({abort_key.upper()} stops)",
+                    keys=[seen_key, "r", abort_key])
+            if key == abort_key:
+                raise Aborted
+            if key != "r":
+                search.update(status="not found: used the average position",
+                              found_xy=None)
+                break
+        if search.get("blind_spot_side_not_seen"):
+            key = backend.show_screen(
+                "Note for the operator: strong patches on the blind spot's side were all "
+                "missed, so that half of the field may be blind.\n\n"
+                "Then the blind-spot checks cannot show whether the eye stays on the +. "
+                "Use the eye tracker for this eye if possible.\n\n"
+                f"Press {seen_key.upper()} to go on   ({abort_key.upper()} stops).",
+                keys=[seen_key, abort_key])
+            if key == abort_key:
+                raise Aborted
+
     monitor_started = False
     try:
         if watching:
@@ -761,6 +903,12 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             seen, rt = present(texture(p.x_deg, p.y_deg, settings.high_contrast))
             log(PRACTICE, None, p.x_deg, p.y_deg, settings.high_contrast, bool(seen), rt,
                 FIXATION_BREAK if seen is None else "")
+
+        if settings.fixation_monitoring == FIX_BLIND_SPOT and p_blind_spot > 0:
+            if settings.blind_spot_search:
+                search_blind_spot()
+            else:
+                search.update(status="off: used the average position")
 
         last = None
         while True:
@@ -865,6 +1013,9 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         patch_radius_px=radius_px, background_cd_m2=mean_luminance, post_processing=post,
         fixation_monitor=(monitor.describe() if watching else settings.fixation_monitoring),
         gaze_check=gaze_check,
+        blind_spot_xy=(blind_spot_xy if settings.fixation_monitoring == FIX_BLIND_SPOT
+                       else None),
+        blind_spot_search=search,
         gaze_samples=([(round(t - t0, 4), None if g is None else round(g[0], 3),
                         None if g is None else round(g[1], 3)) for t, g in monitor.samples]
                       if watching else []))
@@ -957,6 +1108,16 @@ def results_text(outcome: PerimetryOutcome, offer_keys: bool = False) -> str:
         + (f"Eye left the + {rate(outcome.fixation_loss_rate)}" if s.watches_gaze else
          f"Blind-spot seen {rate(outcome.fixation_loss_rate)}") + f" [{tick[c['fixation']]}]",
     ]
+    bs = outcome.blind_spot_search
+    if bs.get("status") == "found":
+        x, y = bs["found_xy"]
+        lines.append(f"Blind spot found at {abs(x):g} deg {'right' if x > 0 else 'left'}, "
+                     f"{abs(y):g} deg {'below' if y < 0 else 'above'} the +")
+    elif bs.get("status"):
+        lines.append("Blind spot NOT found: checks used the average position")
+    if bs.get("blind_spot_side_not_seen"):
+        lines.append("Blind spot's side looked blind: the blind-spot checks cannot show "
+                     "fixation for this eye")
     if outcome.valid:
         lines.append("SESSION VALID")
     else:
@@ -1036,6 +1197,10 @@ def _meta(outcome: PerimetryOutcome) -> dict:
         post_processing=outcome.post_processing,
         prior_table=outcome.prior_table_source,
         blind_spot_grid_points_dropped=outcome.dropped_points,
+        blind_spot=dict(used_xy=(list(outcome.blind_spot_xy) if outcome.blind_spot_xy
+                                 else None),
+                        average_xy=list(blind_spot_position(s)),
+                        search=outcome.blind_spot_search),
         honest_limits=[
             "Timing is software self-report, not photodiode-validated.",
             "Contrast is nominal unless the luminance scale was photometer-measured.",

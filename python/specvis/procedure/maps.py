@@ -133,6 +133,9 @@ def _blind_spot(meta: Optional[dict]) -> Tuple[Optional[Tuple[float, float]],
     side = 1.0 if s.get("eye", "R") == "R" else -1.0
     spot = (side * float(s.get("blind_spot_temporal_deg", 15.5)),
             -float(s.get("blind_spot_below_deg", 1.5)))
+    used = (meta.get("blind_spot") or {}).get("used_xy")
+    if used:                              # this person's own, found by the search
+        spot = (float(used[0]), float(used[1]))
     dropped = [(float(x), float(y)) for x, y in meta.get("blind_spot_grid_points_dropped", [])]
     return spot, dropped
 

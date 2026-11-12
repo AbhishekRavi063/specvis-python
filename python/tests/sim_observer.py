@@ -52,13 +52,14 @@ class Observer(NullBackend):
 
     def __init__(self, threshold, rng, false_alarm=0.02, lapse=0.02,
                  sees_blind_spot=False, abort_after=None, eye="R", press_ms=350.0,
-                 early_blank_presses=False):
+                 early_blank_presses=False, blind_spot=(15.5, -1.5)):
         super().__init__(refresh_hz=120.0)
         self.press_ms, self.early_blank_presses = press_ms, early_blank_presses
         self.threshold, self.rng = threshold, rng
         self.false_alarm, self.lapse = false_alarm, lapse
         self.sees_blind_spot, self.abort_after, self.eye = sees_blind_spot, abort_after, eye
         self.shown = []
+        self.blind_spot = blind_spot     # centre (temporal deg, y deg); 5 x 5 deg
 
     def field_deg(self, px, py):
         mm_x, mm_y = (px - W / 2) * WIDTH_MM / W, (H / 2 - py) * WIDTH_MM / W
@@ -75,7 +76,8 @@ class Observer(NullBackend):
             report.keys = [("escape", 10.0)]
             return report
         temporal = x if self.eye == "R" else -x
-        in_blind_spot = 13.0 <= temporal <= 18.0 and -4.0 <= y <= 1.0
+        bx, by = self.blind_spot
+        in_blind_spot = abs(temporal - bx) <= 2.5 and abs(y - by) <= 2.5
         if c < 1e-6:
             if self.early_blank_presses:
                 report.keys = [("space", 90.0)]      # pressing before anything could be seen
