@@ -68,6 +68,7 @@ from ..core.geometry import PhysicalScreen
 from ..core.luminance import LuminanceCalibration
 from ..stimulus.backend import Mark, StimulusBackend, Texture
 from ..threshold.base import Termination
+from ..threshold.full_threshold import FullThresholdLocation, FullThresholdSettings
 from ..threshold.zest import ZEST, ZestLocationThreshold, ZestSettings
 from .fixation import (FIX_BLIND_SPOT, FIX_NONE, FIXATION_MODES, GAZE_MODES,
                        FixationMonitor, judge_patch, monitor_for)
@@ -91,9 +92,10 @@ BLIND_SPOT_SEARCH, SEARCH_CHECK = "blind_spot_search", "blind_spot_search_check"
 FIXATION_BREAK = "FIXATION_BREAK"
 
 # Strategies
-SITA_FAST, ZEST_FULL = "sita_fast", "zest"
-STRATEGIES = (SITA_FAST, ZEST_FULL)
-STRATEGY_NAMES = {SITA_FAST: "SITA Fast (ZEST engine)", ZEST_FULL: "ZEST (full)"}
+SITA_FAST, ZEST_FULL, FULL_THRESHOLD = "sita_fast", "zest", "full_threshold"
+STRATEGIES = (SITA_FAST, ZEST_FULL, FULL_THRESHOLD)
+STRATEGY_NAMES = {SITA_FAST: "SITA Fast (ZEST engine)", ZEST_FULL: "ZEST (full)",
+                  FULL_THRESHOLD: "Full Threshold 4-2 (Humphrey, as in OPI)"}
 
 # Map categories
 SEEN, WEAK, BLIND, NOT_FINISHED = "seen", "weak", "blind", "not_finished"
@@ -192,6 +194,23 @@ class PerimetrySettings:
 
     zest: ZestSettings = field(default_factory=ZestSettings)
 
+    # Full Threshold (strategy FULL_THRESHOLD): the Humphrey 4-2 staircase as in OPI.
+    # No normal table: seed points start at ft_start_contrast, the rest from finished
+    # neighbours (the growth pattern). The contrast range is the ZEST one above.
+    ft_start_contrast: float = 0.05       # about a normal threshold; Humphrey starts at 25 dB
+    ft_coarse_step_db: float = 8.0        # contrast dB; = Humphrey 4 dB of light
+    ft_fine_step_db: float = 4.0          # = Humphrey 2 dB
+    ft_retest_db: float = 8.0             # second staircase if this far from the start
+    ft_max_presentations: int = 30        # safety net per point
+    #: NOT part of the Humphrey/OPI method (our suggestion, off by default): a point
+    #: whose finished neighbours are all blind starts at the maximum contrast.
+    ft_blind_neighbour_start: bool = False
+
+    def full_threshold_settings(self) -> FullThresholdSettings:
+        return FullThresholdSettings(self.zest.min_contrast, self.zest.max_contrast,
+                                     self.ft_coarse_step_db, self.ft_fine_step_db,
+                                     self.ft_retest_db, self.ft_max_presentations)
+
     def validate(self) -> None:
         if len({self.answer_key, self.pause_key, self.cancel_key}) != 3:
             raise SessionError("the answer, pause and cancel keys must be different")
@@ -203,6 +222,14 @@ class PerimetrySettings:
             raise SessionError(f"fixation monitoring must be one of {FIXATION_MODES}")
         if self.strategy not in STRATEGIES:
             raise SessionError(f"strategy must be one of {STRATEGIES}")
+        if self.strategy == FULL_THRESHOLD:
+            try:
+                self.full_threshold_settings().validate()
+            except ValueError as e:
+                raise SessionError(f"Full Threshold: {e}") from None
+            if not self.zest.min_contrast <= self.ft_start_contrast <= self.zest.max_contrast:
+                raise SessionError("Full Threshold: the start contrast must be inside "
+                                   "the contrast range")
         if self.p_blank + self.p_high + self.p_blind_spot >= 0.5:
             raise SessionError("catch trials must be under half of all trials")
         if self.stimulus_ms <= 0 or self.viewing_distance_mm <= 0 or self.screen_width_mm <= 0:
@@ -236,6 +263,7 @@ class PerimetryPoint:
     index: int
     x_deg: float                       # right +
     y_deg: float                       # up +
+    #: The point's threshold search: ZEST, or a Full Threshold staircase (same questions).
     zest: ZestLocationThreshold
     started: bool = False
     prior_source: str = ""
@@ -565,10 +593,13 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
     points = []
     for i, (x, y) in enumerate(kept):
         is_seed = (float(x), float(y)) in seed_set
-        points.append(PerimetryPoint(
-            i, float(x), float(y),
-            ZestLocationThreshold(zest_settings_for(settings, is_seed), renderable_floor=floor),
-            seed=is_seed))
+        if settings.strategy == FULL_THRESHOLD:
+            finder = FullThresholdLocation(settings.full_threshold_settings(),
+                                           settings.ft_start_contrast, renderable_floor=floor)
+        else:
+            finder = ZestLocationThreshold(zest_settings_for(settings, is_seed),
+                                           renderable_floor=floor)
+        points.append(PerimetryPoint(i, float(x), float(y), finder, seed=is_seed))
     seeds = [p for p in points if p.seed]
     counts = dict(trials=0, blank=0, false_alarms=0, high=0, misses=0, blind_spot=0,
                   blind_spot_seen=0, dropped_frames=0, presentations=0, early_presses=0,
@@ -722,7 +753,7 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                    requested_contrast=round(contrast, 5), rendered_contrast=round(rendered, 5),
                    seen=int(seen), reaction_ms="" if math.isnan(rt) else round(rt, 1),
                    estimate_contrast=(round(10 ** point.zest.estimate_log, 5) if point else ""),
-                   posterior_sd_log10=(round(point.zest.posterior_sd, 4) if point else ""),
+                   posterior_sd_log10=_sd(point),
                    gaze_max_deg=gaze_info.get("gaze_max_deg", ""),
                    gaze_valid_pct=gaze_info.get("gaze_valid_pct", ""),
                    note=note)
@@ -730,9 +761,41 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         if on_trial is not None:
             on_trial(row)
 
+    def neighbours(p: PerimetryPoint) -> List[PerimetryPoint]:
+        """Finished points near p, in its own quadrant."""
+        return [q for q in points
+                if q is not p and q.quadrant == p.quadrant and q.zest.finished()
+                and math.hypot(q.x_deg - p.x_deg, q.y_deg - p.y_deg) <= settings.neighbour_radius_deg]
+
+    def start_full_threshold(p: PerimetryPoint) -> None:
+        """The growth pattern: seeds start at ft_start_contrast; other points at the
+        median of their finished neighbours' thresholds (blind neighbours are not
+        used unless ft_blind_neighbour_start is on). No table."""
+        if p.seed:
+            p.prior_source = "fixed start (seed point)"
+            return
+        near = neighbours(p)
+        measured = [q.neighbour_value_log() for q in near
+                    if q.zest.result().termination is not Termination.CEILING_NOT_SEEN]
+        measured = [v for v in measured if v is not None]
+        blind = len(near) - len(measured)
+        if measured:
+            p.zest.set_start(10 ** float(np.median(measured)))
+            p.expected_log = p.zest.prior_centre_log
+            p.prior_source = f"growth pattern: {len(measured)} neighbours"
+        elif blind and settings.ft_blind_neighbour_start:
+            p.zest.set_start(settings.zest.max_contrast)
+            p.expected_log = p.zest.prior_centre_log
+            p.prior_source = f"maximum: {blind} blind neighbours (our rule)"
+        else:
+            p.prior_source = "fixed start (no measured neighbour)"
+
     def start_point(p: PerimetryPoint) -> None:
         """Give a point its starting guess, at its first presentation."""
         p.started = True
+        if settings.strategy == FULL_THRESHOLD:
+            start_full_threshold(p)
+            return
         if settings.pilot_mode:
             p.prior_source = "none (pilot mode)"
             return
@@ -918,6 +981,11 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             pending_seeds = [p for p in seeds if not p.zest.finished()]
             if pending_seeds:
                 pending = pending_seeds
+            elif settings.strategy == FULL_THRESHOLD:
+                # Growth pattern: grow outwards from finished points -- start a point
+                # only once a neighbour is finished (points already started go on).
+                ready = [p for p in pending if p.started or neighbours(p)]
+                pending = ready or pending
 
             r = rng.random()
             high_candidates = [p for p in points if p.zest.finished() and p.zest.result().valid
@@ -1025,6 +1093,13 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
 # Results
 # ------------------------------------------------------------------------------
 
+def _sd(point: Optional[PerimetryPoint]):
+    """ZEST's posterior SD for trials.csv / summary.csv; blank for a staircase."""
+    if point is None or math.isnan(point.zest.posterior_sd):
+        return ""
+    return round(point.zest.posterior_sd, 4)
+
+
 def categorise(outcome: PerimetryOutcome, p: PerimetryPoint,
                table: Optional[PriorTable] = None) -> str:
     """seen / weak / blind / not_finished, for the map.
@@ -1066,7 +1141,7 @@ def summary_rows(outcome: PerimetryOutcome, table: Optional[PriorTable] = None) 
             threshold_log10=round(math.log10(r.value), 4) if r.valid else "",
             threshold_db=round(-20 * math.log10(r.value), 2) if r.valid else "",
             estimate_contrast=round(10 ** p.zest.estimate_log, 5) if p.zest.trials else "",
-            posterior_sd_log10=round(p.zest.posterior_sd, 4) if p.zest.trials else "",
+            posterior_sd_log10=_sd(p) if p.zest.trials else "",
             trials=r.trials, termination=r.termination.value, note=r.note,
             seed_point=p.seed, retested=p.zest.retested,
             early_stop=p.zest.early_stop,

@@ -43,7 +43,8 @@ from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDateEdit,
 
 from ..core.gabor import GaborParameters, minimum_renderable_contrast, render_brightness
 from ..core.luminance import MEASUREMENT_POINTS, LuminanceCalibration
-from ..procedure.perimetry import (CENTRAL, FAILURE_REASONS, FULL, SITA_FAST, STRATEGIES,
+from ..procedure.perimetry import (CENTRAL, FAILURE_REASONS, FULL, FULL_THRESHOLD, SITA_FAST,
+                                   STRATEGIES,
                                    STRATEGY_NAMES, PerimetrySettings, background_for,
                                    blind_spot_position, default_calibration,
                                    field_half_degrees, fit_problem, grid_points,
@@ -917,6 +918,21 @@ class ProcedureDialog(QDialog):
         form.addRow("Missed strong patches allowed, at most", self.miss)
         form.addRow("Break every", self.brk)
         form.addRow("Practice trials", self.practice)
+        # Full Threshold (4-2). Contrast dB: 2 of ours = 1 Humphrey dB.
+        self.ft_start = _spin(0.001, 1.0, s.ft_start_contrast, 0.01, 3)
+        self.ft_coarse = _spin(1.0, 20.0, s.ft_coarse_step_db, 1.0, 1, "dB")
+        self.ft_fine = _spin(0.5, 10.0, s.ft_fine_step_db, 0.5, 1, "dB")
+        self.ft_retest = _spin(0.0, 30.0, s.ft_retest_db, 1.0, 1, "dB")
+        self.ft_blind = QCheckBox("Start at the maximum next to blind neighbours "
+                                  "(our suggestion, NOT the published method)")
+        self.ft_blind.setChecked(s.ft_blind_neighbour_start)
+        form.addRow(_label("Full Threshold (4-2), in contrast dB "
+                           "(2 of ours = 1 Humphrey dB):"))
+        form.addRow("Seed points start at contrast", self.ft_start)
+        form.addRow("First step", self.ft_coarse)
+        form.addRow("Step after the first reversal", self.ft_fine)
+        form.addRow("Second staircase if further from the start than", self.ft_retest)
+        form.addRow(self.ft_blind)
         form.addRow("Normal table", _label(table_text))
         form.addRow(_button("Build normal table from valid pilot sessions", build))
         b = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -930,6 +946,11 @@ class ProcedureDialog(QDialog):
                     max_false_alarm_rate=self.fa.value() / 100.0,
                     max_miss_rate=self.miss.value() / 100.0,
                     break_every_trials=self.brk.value(), practice_trials=self.practice.value(),
+                    ft_start_contrast=self.ft_start.value(),
+                    ft_coarse_step_db=self.ft_coarse.value(),
+                    ft_fine_step_db=self.ft_fine.value(),
+                    ft_retest_db=self.ft_retest.value(),
+                    ft_blind_neighbour_start=self.ft_blind.isChecked(),
                     zest=dict(sd_stop=self.sd.value(), min_trials=self.mn.value(),
                               max_trials=max(self.mn.value(), self.mx.value())))
 
@@ -1424,11 +1445,13 @@ class SpecvisWindow(QMainWindow):
             box.addItems(KEYS)
             bl.addLayout(_row([_lab(name, 190, 40, 18), box], spacing=10))
         self.f_procedure = _fixed(QComboBox(), 200, 40)
-        self.f_procedure.addItems(["SITA Fast", "ZEST (full)"])
+        self.f_procedure.addItems(["SITA Fast", "ZEST (full)", "Full Threshold (4-2)"])
         self.f_procedure.setToolTip("SITA Fast: SITA Fast's published rules around a ZEST engine "
                                     "(about 4 min a healthy eye, 8 min with hemianopia, with a "
                                     "normal table). ZEST (full): the slower, stricter search, "
-                                    "used with pilot mode to build the normal table.")
+                                    "used with pilot mode to build the normal table. Full "
+                                    "Threshold (4-2): the Humphrey staircase as in the Open "
+                                    "Perimetry Interface; needs no normal table.")
         self.f_procedure.currentIndexChanged.connect(self._read)
         br.addLayout(_row([_lab("Procedure", 190, 40, 18), self.f_procedure], spacing=10))
         br.addLayout(_row([_lab("", 190, 40), _fixed(_button("Settings", self.procedure_settings),
@@ -1553,7 +1576,7 @@ class SpecvisWindow(QMainWindow):
         self.f_iti_r.setValue(s.iti_ms[1] - s.iti_ms[0])
         self.f_bg.setValue(s.background_cd_m2 if s.background_cd_m2 > 0 else 10.0)
         self.f_dither.setChecked(s.dithering)
-        self.f_procedure.setCurrentIndex(0 if s.strategy == SITA_FAST else 1)
+        self.f_procedure.setCurrentIndex(STRATEGIES.index(s.strategy))
         self.f_grid.setCurrentText(s.extent)
         self.f_fix_colour.setCurrentText(s.fixation_colour)
         self.f_fix_mon.setCurrentText(next((k for k, v in FIX_CHOICES.items()
@@ -1660,9 +1683,15 @@ class SpecvisWindow(QMainWindow):
         self._preview()
         self.f_proc_summary.setText(
             f"{STRATEGY_NAMES[s.strategy]};  pilot mode {'ON' if s.pilot_mode else 'off'};  "
-            + (f"stop: SITA Fast (seed points SD < {s.zest.sd_stop:.2f} log10)"
-               if s.strategy == SITA_FAST else f"stop at SD < {s.zest.sd_stop:.2f} log10")
-            + f", {s.zest.min_trials}-{s.zest.max_trials} trials per location;  catch: blank "
+            + (f"steps {s.ft_coarse_step_db:g} then {s.ft_fine_step_db:g} dB, stop after 2 "
+               f"reversals, second staircase if > {s.ft_retest_db:g} dB from the start"
+               + (", blind-neighbour start ON (not in the published method)"
+                  if s.ft_blind_neighbour_start else "")
+               if s.strategy == FULL_THRESHOLD else
+               (f"stop: SITA Fast (seed points SD < {s.zest.sd_stop:.2f} log10)"
+                if s.strategy == SITA_FAST else f"stop at SD < {s.zest.sd_stop:.2f} log10")
+               + f", {s.zest.min_trials}-{s.zest.max_trials} trials per location")
+            + ";  catch: blank "
             f"{100 * s.p_blank:.0f}%, strong {100 * s.p_high:.0f}%, blind spot "
             f"{100 * s.p_blind_spot:.0f}%;  normal table: {self._table_text()}")
         kept, _ = grid_points(s)
