@@ -1,12 +1,12 @@
 {
-  "name": "Lab monitor - pilot (normal table)",
-  "description": "The 15-20 healthy people (mostly 20-30, plus a few aged 50-70) whose results build the normal table. 57 cm with a chin rest. MEASURE the monitor's visible width once and save it into this preset (Save settings). ZEST (full) with pilot mode on, background 10 cd/m2 (Humphrey) with dithering; exact luminance only with a photometer scale.",
+  "name": "Lab monitor - try-out (blind-spot check)",
+  "description": "Trying the full test on the lab monitor: 24-2 (52 points) at 33 cm with a chin rest, Full Threshold 4-2 staircase (OPI), seeds at the middle of the dB range, fixation checked at each person's own blind spot. MEASURE the visible screen width and save it here (Save settings); choose the ColorCAL luminance scale in Step 2.",
   "settings": {
     "screen_width_mm": 0.0,
-    "viewing_distance_mm": 570.0,
-    "extent": "full",
+    "viewing_distance_mm": 330.0,
+    "extent": "24-2",
     "pilot_mode": true,
-    "strategy": "zest",
+    "strategy": "full_threshold",
     "background_cd_m2": 10.0,
     "dithering": true,
     "fixation_ms": 0.0,

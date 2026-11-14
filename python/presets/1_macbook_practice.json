@@ -1,12 +1,12 @@
 {
   "name": "MacBook 14\" - practice",
-  "description": "Practice and checking the method on a 14-inch MacBook Pro at 35 cm. Not for the normal table: thresholds depend on the screen. SITA Fast (ZEST engine), background 10 cd/m2 (Humphrey) with dithering; exact luminance only with a photometer scale.",
+  "description": "Practice on a 14-inch MacBook Pro at 35 cm. The 24-2 does not fit this screen, so the older 68-point grid is used here; results are not for the study. Full Threshold 4-2 staircase (OPI), seeds at the middle of the dB range; assumed screen unless a ColorCAL scale is chosen.",
   "settings": {
     "screen_width_mm": 302.0,
     "viewing_distance_mm": 350.0,
     "extent": "full",
     "pilot_mode": true,
-    "strategy": "sita_fast",
+    "strategy": "full_threshold",
     "background_cd_m2": 10.0,
     "dithering": true,
     "fixation_ms": 0.0,

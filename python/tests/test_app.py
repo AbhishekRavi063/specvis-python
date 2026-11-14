@@ -98,8 +98,10 @@ require(everyone == ["OLD01", "PILOT02"], f"old session's participant is listed:
 presets = store.list_presets(presets_dir)
 require(len(presets) == 3 and presets[0].settings["viewing_distance_mm"] == 350.0,
         f"three shared presets: {[p.name for p in presets]}")
-require(presets[1].settings.get("strategy") == "zest" and presets[1].settings["pilot_mode"],
-        "the pilot (table) preset uses ZEST (full) with pilot mode on, as the plan says")
+require(all(p.settings.get("strategy") == "full_threshold" for p in presets)
+        and [p.settings["extent"] for p in presets[1:]] == ["24-2", "24-2"]
+        and [p.settings["viewing_distance_mm"] for p in presets[1:]] == [330.0, 330.0],
+        "presets use the Full Threshold staircase; the lab ones the 24-2 at 33 cm")
 
 print("2. the window")
 win = MainWindow(perimetry_dir, participants_file, presets_dir, perimetry_dir / "prior_table.csv")

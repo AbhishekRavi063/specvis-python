@@ -43,11 +43,12 @@ from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDateEdit,
 
 from ..core.gabor import GaborParameters, minimum_renderable_contrast, render_brightness
 from ..core.luminance import MEASUREMENT_POINTS, LuminanceCalibration
-from ..procedure.perimetry import (CENTRAL, FAILURE_REASONS, FULL, FULL_THRESHOLD, SITA_FAST,
+from ..procedure.perimetry import (CENTRAL, EXTENTS, FAILURE_REASONS, FULL, FULL_THRESHOLD, SITA_FAST,
                                    STRATEGIES,
                                    STRATEGY_NAMES, PerimetrySettings, background_for,
                                    blind_spot_position, default_calibration,
-                                   field_half_degrees, fit_problem, grid_points,
+                                   contrast_range_db, field_half_degrees, fit_problem,
+                                   grid_points,
                                    settings_from_dict, settings_to_dict)
 from ..procedure.fixation import FIX_BLIND_SPOT, FIX_MOUSE, FIX_NONE, FIX_TRACKER
 from ..procedure.prior_table import PriorTable, build_prior_table
@@ -891,6 +892,17 @@ class FixMonitorDialog(QDialog):
                     fixation_hold_ms=self.hold.value())
 
 
+def _range_line(s: PerimetrySettings, cal) -> str:
+    """The measurable dB range at this background, and where the staircase seeds start."""
+    r = contrast_range_db(s, cal)
+    start = (f"{-20 * math.log10(s.ft_start_contrast):.1f} dB (given)" if s.ft_start_contrast
+             else f"{r['middle_db']:.1f} dB (middle of the range)")
+    return (f"dB range           {r['strongest_db'] + 0.0:.1f} (strongest) to "
+            f"{r['faintest_db']:.1f} (faintest{', dithered' if s.dithering else ''}); "
+            f"one grey step {r['grey_step_db']:.1f} dB; staircase seeds start {start}"
+            + ("" if r["calibrated"] else "  [ASSUMED screen: measure with the photometer]"))
+
+
 class ProcedureDialog(QDialog):
     def __init__(self, parent, s: PerimetrySettings, table_text: str, build: Callable):
         super().__init__(parent)
@@ -919,7 +931,7 @@ class ProcedureDialog(QDialog):
         form.addRow("Break every", self.brk)
         form.addRow("Practice trials", self.practice)
         # Full Threshold (4-2). Contrast dB: 2 of ours = 1 Humphrey dB.
-        self.ft_start = _spin(0.001, 1.0, s.ft_start_contrast, 0.01, 3)
+        self.ft_start = _spin(0.0, 1.0, s.ft_start_contrast, 0.01, 3)
         self.ft_coarse = _spin(1.0, 20.0, s.ft_coarse_step_db, 1.0, 1, "dB")
         self.ft_fine = _spin(0.5, 10.0, s.ft_fine_step_db, 0.5, 1, "dB")
         self.ft_retest = _spin(0.0, 30.0, s.ft_retest_db, 1.0, 1, "dB")
@@ -928,7 +940,8 @@ class ProcedureDialog(QDialog):
         self.ft_blind.setChecked(s.ft_blind_neighbour_start)
         form.addRow(_label("Full Threshold (4-2), in contrast dB "
                            "(2 of ours = 1 Humphrey dB):"))
-        form.addRow("Seed points start at contrast", self.ft_start)
+        form.addRow("Seed points start at contrast (0 = middle of the dB range)",
+                    self.ft_start)
         form.addRow("First step", self.ft_coarse)
         form.addRow("Step after the first reversal", self.ft_fine)
         form.addRow("Second staircase if further from the start than", self.ft_retest)
@@ -1349,7 +1362,7 @@ class SpecvisWindow(QMainWindow):
         right.addLayout(_row([self.f_dither]))
         right.addWidget(_separator())
         self.f_grid = _fixed(QComboBox(), 85, H)
-        self.f_grid.addItems([FULL, CENTRAL])
+        self.f_grid.addItems(list(EXTENTS))
         self.f_grid.setToolTip("full: +/-21 x +/-13 deg (68 points); central: +/-13 deg")
         self.f_spacing = _fixed(_readonly("4 / 6"), 85, H)
         self.f_spacing.setToolTip("Grid spacing: 4 deg across, 6 deg up/down; no point on a midline")
@@ -1707,6 +1720,7 @@ class SpecvisWindow(QMainWindow):
             f"Stimulus           Gabor {s.diameter_degrees:g}°, {s.spatial_frequency_cpd:g} c/°, "
             f"{s.orientation_degrees:g}°, {s.stimulus_ms:.0f} ms",
             f"Contrast           {s.zest.min_contrast:g} to {s.zest.max_contrast:g}",
+            _range_line(s, cal),
             f"Timing             + {s.fixation_ms:.0f} ms, answer <= {s.response_window_ms:.0f} ms"
             + (", adaptive" if s.adaptive_window else ""),
             f"Interval           {s.iti_ms[0]:.0f} + 0-{s.iti_ms[1] - s.iti_ms[0]:.0f} ms",

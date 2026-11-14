@@ -82,8 +82,15 @@ ABORT_KEY = "escape"
 #: a midline.
 GRID_X = (1, 5, 9, 13, 17, 21)
 GRID_Y = (1, 7, 13)
-FULL, CENTRAL = "full", "central"
-EXTENTS = (FULL, CENTRAL)
+FULL, CENTRAL, H24_2 = "full", "central", "24-2"
+EXTENTS = (H24_2, FULL, CENTRAL)
+#: The Humphrey 24-2 (the clinical standard; also used on flat screens, e.g. Melbourne
+#: Rapid Fields): points 6 deg apart, 3 deg off both midlines, out to 21 deg, plus two
+#: nasal points at 27 deg. 54 points; the 2 at 15 deg temporal, 3 deg above and below,
+#: lie in the blind spot and are left out, as in the Humphrey's analysis -> 52 tested.
+H24_2_ROWS = {3: (3, 9, 15, 21), 9: (3, 9, 15, 21), 15: (3, 9, 15), 21: (3, 9)}
+H24_2_NASAL = 27
+H24_2_SEEDS = ((-9, 9), (9, 9), (-9, -9), (9, -9))   # the Humphrey's primary points
 
 # Point and trial kinds, as written to trials.csv
 ZEST_TRIAL, PROBE_TRIAL = "zest", "zest_probe_max"
@@ -105,13 +112,14 @@ SEEN, WEAK, BLIND, NOT_FINISHED = "seen", "weak", "blind", "not_finished"
 class PerimetrySettings:
     participant_id: str = "pilot"
     eye: str = "R"                        # the eye tested; the other is covered
-    extent: str = FULL                    # FULL = +/-21 x +/-13, CENTRAL = +/-13 x +/-13
+    extent: str = H24_2                   # 24-2 (52 points); FULL = Aflah's +/-21 x +/-13
+                                          # (68); CENTRAL = +/-13 x +/-13
     pilot_mode: bool = True               # no starting guesses: clean data for the table
-    strategy: str = SITA_FAST
+    strategy: str = FULL_THRESHOLD        # the team's choice (2026-11-13): no normal table
 
     # Screen, measured
-    screen_width_mm: float = 302.0
-    viewing_distance_mm: float = 350.0
+    screen_width_mm: float = 531.0        # a 24" 16:9 monitor (nominal): MEASURE it
+    viewing_distance_mm: float = 330.0    # the 24-2 needs about 33-37 cm on a 24" screen
 
     # Stimulus: the ReFreM SSVEP Gabor, shown static
     diameter_degrees: float = 2.0
@@ -164,7 +172,10 @@ class PerimetrySettings:
 
     # Speed-ups
     seed_points: Tuple[Tuple[int, int], ...] = ((-9, 7), (9, 7), (-9, -7), (9, -7))
-    neighbour_radius_deg: float = 8.0
+    #: Neighbours for starting guesses / the growth pattern: same quadrant, this close.
+    #: 8.5 takes in the 24-2's diagonal neighbours (8.49 deg); on the old grid it picks
+    #: exactly the same neighbours as 8.0 did.
+    neighbour_radius_deg: float = 8.5
     prior_sd_log: float = 0.5             # deliberately broad
     prior_flat_weight: float = 0.2
     # SITA Fast's starting guess: narrower (a normal table is trusted more), with SITA's
@@ -197,7 +208,11 @@ class PerimetrySettings:
     # Full Threshold (strategy FULL_THRESHOLD): the Humphrey 4-2 staircase as in OPI.
     # No normal table: seed points start at ft_start_contrast, the rest from finished
     # neighbours (the growth pattern). The contrast range is the ZEST one above.
-    ft_start_contrast: float = 0.05       # about a normal threshold; Humphrey starts at 25 dB
+    #: 0 = the middle of the measurable range in dB (strongest the screen can show at
+    #: this background, to the faintest: one grey step, or the search floor when
+    #: dithered). No normal values are needed; the start does not change the results
+    #: (simulation), only the time. A positive value is used as given.
+    ft_start_contrast: float = 0.0
     ft_coarse_step_db: float = 8.0        # contrast dB; = Humphrey 4 dB of light
     ft_fine_step_db: float = 4.0          # = Humphrey 2 dB
     ft_retest_db: float = 8.0             # second staircase if this far from the start
@@ -227,7 +242,8 @@ class PerimetrySettings:
                 self.full_threshold_settings().validate()
             except ValueError as e:
                 raise SessionError(f"Full Threshold: {e}") from None
-            if not self.zest.min_contrast <= self.ft_start_contrast <= self.zest.max_contrast:
+            if self.ft_start_contrast and not (self.zest.min_contrast <= self.ft_start_contrast
+                                               <= self.zest.max_contrast):
                 raise SessionError("Full Threshold: the start contrast must be inside "
                                    "the contrast range")
         if self.p_blank + self.p_high + self.p_blind_spot >= 0.5:
@@ -293,6 +309,41 @@ class PerimetryPoint:
         return self.zest.estimate_log
 
 
+def seeds_for(settings: PerimetrySettings) -> Tuple[Tuple[float, float], ...]:
+    """One seed (primary) point per quadrant: the settings' own when they are on the
+    grid, else the grid's standard ones (the Humphrey's (+/-9, +/-9) on the 24-2)."""
+    kept, _ = grid_points(settings)
+    on_grid = {(float(x), float(y)) for x, y in kept}
+    own = tuple((float(x), float(y)) for x, y in settings.seed_points)
+    if all(p in on_grid for p in own):
+        return own
+    if settings.extent == H24_2:
+        return tuple((float(x), float(y)) for x, y in H24_2_SEEDS)
+    return own
+
+
+def contrast_range_db(settings: PerimetrySettings, calibration: LuminanceCalibration
+                      ) -> Dict[str, float]:
+    """The measurable range in contrast dB (larger = fainter) at this background.
+
+    strongest: the largest contrast the screen can show around the background without
+    clipping (and not above the search maximum). faintest: one 8-bit grey step at the
+    background; with dithering, the search floor (``zest.min_contrast``), which must
+    be checked with the photometer. middle: halfway, in dB -- the Full Threshold seeds'
+    start when ``ft_start_contrast`` is 0.
+    """
+    mean, _ = background_for(settings, calibration)
+    strong = min(settings.zest.max_contrast, calibration.max_achievable_contrast(mean))
+    step = minimum_renderable_contrast(calibration, mean)
+    faint = settings.zest.min_contrast if settings.dithering else max(step, settings.zest.min_contrast)
+    strong = max(strong, faint)
+    s_db, f_db = -20 * math.log10(strong), -20 * math.log10(faint)
+    return dict(strongest_db=round(s_db, 2), faintest_db=round(f_db, 2),
+                middle_db=round((s_db + f_db) / 2, 2), grey_step_db=round(-20 * math.log10(step), 2),
+                strongest_contrast=strong, faintest_contrast=faint,
+                background_cd_m2=round(mean, 3), calibrated=calibration.calibrated)
+
+
 def grid_points(settings: PerimetrySettings) -> Tuple[List[Tuple[int, int]],
                                                        List[Tuple[int, int]]]:
     """The test points, and the grid points dropped because they fall in the blind spot.
@@ -301,6 +352,16 @@ def grid_points(settings: PerimetrySettings) -> Tuple[List[Tuple[int, int]],
     blind spot (temporal 12-18 deg, 3 below to 1 above), where every eye is blind;
     they are checked by the blind-spot catch trials instead.
     """
+    if settings.extent == H24_2:
+        pts = [(sx * x, sy * y) for y, row in H24_2_ROWS.items() for x in row
+               for sx in (-1, 1) for sy in (-1, 1)]
+        nasal = -settings.temporal_sign * H24_2_NASAL
+        pts += [(nasal, 3), (nasal, -3)]
+        pts.sort(key=lambda p: (math.hypot(*p), p))
+        kept, dropped = [], []
+        for x, y in pts:
+            (dropped if x * settings.temporal_sign == 15 and abs(y) == 3 else kept).append((x, y))
+        return kept, dropped
     xs = [s * x for x in GRID_X for s in (-1, 1)]
     ys = [s * y for y in GRID_Y for s in (-1, 1)]
     if settings.extent == CENTRAL:
@@ -338,6 +399,8 @@ class PerimetryOutcome:
     #: Where the blind-spot catch trials went (found by the search, or the average).
     blind_spot_xy: Optional[Tuple[float, float]] = None
     blind_spot_search: Dict[str, object] = field(default_factory=dict)
+    #: The measurable contrast range at this background and the seeds' start (dB).
+    contrast_range: Dict[str, object] = field(default_factory=dict)
 
     @property
     def early_press_rate(self) -> float:
@@ -570,6 +633,18 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
              else minimum_renderable_contrast(calibration, mean_luminance))
     blank = np.full(render_brightness(base, calibration, ppd_x, ppd_y).shape, background)
     fixation = (centre, max(12.0, 0.5 * ppd_x))
+    # Full Threshold: never ask for more contrast than the screen can show at this
+    # background (a clipped patch would be logged at a contrast it never had); the seeds
+    # start at the middle of the range unless a start is given.
+    db_range = contrast_range_db(settings, calibration)
+    ft_settings = dataclasses.replace(settings.full_threshold_settings(),
+                                      max_contrast=db_range["strongest_contrast"])
+    ft_start = (settings.ft_start_contrast if settings.ft_start_contrast
+                else 10 ** (-db_range["middle_db"] / 20))
+    ft_start = min(ft_settings.max_contrast, max(ft_settings.min_contrast, ft_start))
+    db_range["ft_start_db"] = round(-20 * math.log10(ft_start), 2)
+    db_range["ft_start_rule"] = ("given" if settings.ft_start_contrast
+                                 else "middle of the measurable range")
     noise = np.random.default_rng(rng.randrange(2 ** 32))
 
     def texture(x: float, y: float, contrast: float) -> Texture:
@@ -589,13 +664,12 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
     gaze_check: Dict[str, object] = {}
 
     # -- state -------------------------------------------------------------------------
-    seed_set = {(float(x), float(y)) for x, y in settings.seed_points}
+    seed_set = {(float(x), float(y)) for x, y in seeds_for(settings)}
     points = []
     for i, (x, y) in enumerate(kept):
         is_seed = (float(x), float(y)) in seed_set
         if settings.strategy == FULL_THRESHOLD:
-            finder = FullThresholdLocation(settings.full_threshold_settings(),
-                                           settings.ft_start_contrast, renderable_floor=floor)
+            finder = FullThresholdLocation(ft_settings, ft_start, renderable_floor=floor)
         else:
             finder = ZestLocationThreshold(zest_settings_for(settings, is_seed),
                                            renderable_floor=floor)
@@ -768,7 +842,8 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 and math.hypot(q.x_deg - p.x_deg, q.y_deg - p.y_deg) <= settings.neighbour_radius_deg]
 
     def start_full_threshold(p: PerimetryPoint) -> None:
-        """The growth pattern: seeds start at ft_start_contrast; other points at the
+        """The growth pattern: seeds start at ft_start (the middle of the range unless
+        given); other points at the
         median of their finished neighbours' thresholds (blind neighbours are not
         used unless ft_blind_neighbour_start is on). No table."""
         if p.seed:
@@ -784,7 +859,7 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             p.expected_log = p.zest.prior_centre_log
             p.prior_source = f"growth pattern: {len(measured)} neighbours"
         elif blind and settings.ft_blind_neighbour_start:
-            p.zest.set_start(settings.zest.max_contrast)
+            p.zest.set_start(ft_settings.max_contrast)
             p.expected_log = p.zest.prior_centre_log
             p.prior_source = f"maximum: {blind} blind neighbours (our rule)"
         else:
@@ -1084,6 +1159,7 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         blind_spot_xy=(blind_spot_xy if settings.fixation_monitoring == FIX_BLIND_SPOT
                        else None),
         blind_spot_search=search,
+        contrast_range=db_range,
         gaze_samples=([(round(t - t0, 4), None if g is None else round(g[0], 3),
                         None if g is None else round(g[1], 3)) for t, g in monitor.samples]
                       if watching else []))
@@ -1198,7 +1274,8 @@ def results_text(outcome: PerimetryOutcome, offer_keys: bool = False) -> str:
     else:
         lines.append("SESSION NOT VALID - repeat this eye")
         lines += [FAILURE_REASONS[k] for k, passed in c.items() if not passed]
-    lines.append("Green = seen   yellow = weak   red = blind   (number = faintest contrast seen)")
+    lines.append("Green = seen   yellow = weak   red = blind   (number = threshold: the contrast "
+                 "seen about 6 times in 10)")
     other = "LEFT" if s.eye == "R" else "RIGHT"
     lines.append(f"SPACE = finish     O = test the {other} eye now     R = repeat this eye"
                  if offer_keys else "Press SPACE to finish.")
@@ -1276,6 +1353,8 @@ def _meta(outcome: PerimetryOutcome) -> dict:
                                  else None),
                         average_xy=list(blind_spot_position(s)),
                         search=outcome.blind_spot_search),
+        grid=s.extent,
+        contrast_range=outcome.contrast_range,
         honest_limits=[
             "Timing is software self-report, not photodiode-validated.",
             "Contrast is nominal unless the luminance scale was photometer-measured.",

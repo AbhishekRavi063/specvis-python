@@ -34,7 +34,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
 
 from ..core.gabor import GaborParameters, render_brightness
 from ..core.luminance import LuminanceCalibration
-from ..procedure.perimetry import (CENTRAL, FAILURE_REASONS, FULL, PerimetrySettings,
+from ..procedure.perimetry import (CENTRAL, EXTENTS, FAILURE_REASONS, FULL, PerimetrySettings,
                                    blind_spot_position, field_half_degrees, fit_problem,
                                    grid_points, settings_from_dict, settings_to_dict)
 from ..procedure.prior_table import PriorTable, build_prior_table
@@ -534,7 +534,7 @@ class MainWindow(QMainWindow):
         grid = QGridLayout()
         s = self.settings
         self.extent_box = QComboBox()
-        self.extent_box.addItems([FULL, CENTRAL])
+        self.extent_box.addItems(list(EXTENTS))
         self.pilot = QCheckBox("Pilot mode (the 15-20 table people: no starting guesses, "
                                "builds the normal table)")
         self.sd_stop = _spin(0.05, 0.5, s.zest.sd_stop, 0.01, 2, "log10")

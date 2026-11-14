@@ -13,16 +13,21 @@ Three monitors:
   procedure without a tracker: keep the pointer on the + and the test runs; move it
   away and trials are thrown away.
 * :class:`TobiiMonitor`: a Tobii Pro eye tracker (built for the Pro Fusion) through the
-  Tobii Pro SDK (``pip install tobii-research``). **Not yet tried on the device.** The
-  tracker's display area must be set up, and the eye calibrated, in Tobii Pro Eye
-  Tracker Manager before the session.
+  Tobii Pro SDK. **Not yet tried on the device.** The tracker's display area must be
+  set up, and the eye calibrated, in Tobii Pro Eye Tracker Manager before the session.
+  The SDK (``tobii-research``) is published for **Python 3.10 only**, and the app runs
+  on 3.11; so unless the SDK imports here, gaze comes from ``tools/tobii_bridge.py``,
+  run in its own Python 3.10 environment, which forwards every sample over UDP on this
+  computer (127.0.0.1, port ``BRIDGE_PORT``).
 
 :class:`ScriptedMonitor` gives tests a gaze path without any hardware.
 """
 
 from __future__ import annotations
 
+import json
 import math
+import socket
 import threading
 import time
 from typing import Callable, List, Optional, Sequence, Tuple
@@ -33,6 +38,7 @@ Sample = Tuple[float, Gaze]                    # (time.monotonic(), gaze)
 FIX_BLIND_SPOT, FIX_NONE, FIX_TRACKER, FIX_MOUSE = "blind spot", "none", "eye tracker", "mouse"
 FIXATION_MODES = (FIX_BLIND_SPOT, FIX_NONE, FIX_TRACKER, FIX_MOUSE)
 GAZE_MODES = (FIX_TRACKER, FIX_MOUSE)          # the modes that watch the eye
+BRIDGE_PORT = 5555                             # tools/tobii_bridge.py -> the app (UDP)
 
 
 class FixationMonitor:
@@ -158,12 +164,12 @@ class TobiiMonitor(FixationMonitor):
 
     def begin(self, backend, to_deg) -> None:
         super().begin(backend, to_deg)
+        self._size = backend.size_px
         try:
             import tobii_research as tr          # noqa: F401
-        except ImportError as e:
-            raise RuntimeError(
-                "The Tobii Pro SDK is not installed. Install it with:  "
-                "pip install tobii-research") from e
+        except ImportError:
+            self._begin_bridge()
+            return
         self._tr = tr
         found = tr.find_all_eyetrackers()
         if self.serial:
@@ -173,7 +179,6 @@ class TobiiMonitor(FixationMonitor):
                                "Tobii Pro Eye Tracker Manager can see it.")
         self._tracker = found[0]
         self.model = f"{self._tracker.model} ({self._tracker.serial_number})"
-        self._size = backend.size_px
         self._tracker.subscribe_to(tr.EYETRACKER_GAZE_DATA, self._on_gaze, as_dictionary=True)
 
     def _on_gaze(self, data: dict) -> None:
@@ -193,7 +198,66 @@ class TobiiMonitor(FixationMonitor):
             t, g = self.samples[-1]
         return g if time.monotonic() - t < 0.05 else None
 
+    # -- the Python 3.10 bridge ----------------------------------------------------------
+
+    def _begin_bridge(self, port: int = BRIDGE_PORT, wait_s: float = 3.0) -> None:
+        """Gaze from tools/tobii_bridge.py over UDP. Fails if nothing arrives in time."""
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            self._sock.bind(("127.0.0.1", port))
+        except OSError as e:
+            self._sock.close()
+            raise RuntimeError(f"Port {port} is in use: is another ReFreM test running?") from e
+        self._sock.settimeout(0.2)
+        first = None
+        deadline = time.monotonic() + wait_s
+        while first is None and time.monotonic() < deadline:
+            try:
+                first = self._sock.recv(4096)
+            except socket.timeout:
+                pass
+        if first is None:
+            self._sock.close()
+            raise RuntimeError(
+                "No gaze from the eye tracker. Start the bridge first, in its own "
+                "terminal:  python/specvis.sh tracker-bridge   (it needs Python 3.10 and "
+                "tobii-research: python/specvis.sh tracker-setup)")
+        self._handle_packet(first)
+        self._running = True
+        self._thread = threading.Thread(target=self._listen, daemon=True)
+        self._thread.start()
+
+    def _handle_packet(self, data: bytes) -> None:
+        try:
+            msg = json.loads(data.decode("utf-8"))
+        except ValueError:
+            return
+        if msg.get("model") and not self.model:
+            self.model = f"{msg['model']} ({msg.get('serial', '?')}) via bridge"
+        side = "r" if self.eye == "R" else "l"
+        x, y, valid = msg.get(side) or (None, None, 0)
+        x = float("nan") if x is None else float(x)
+        y = float("nan") if y is None else float(y)
+        self._on_gaze({f"{'right' if side == 'r' else 'left'}_gaze_point_validity": valid,
+                       f"{'right' if side == 'r' else 'left'}_gaze_point_on_display_area":
+                           (x, y)})
+
+    def _listen(self) -> None:
+        while self._running:
+            try:
+                self._handle_packet(self._sock.recv(4096))
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+
     def end(self) -> None:
+        if getattr(self, "_sock", None) is not None:
+            self._running = False
+            self._thread.join(timeout=1.0)
+            self._sock.close()
+            self._sock = None
         if self._tracker is not None:
             self._tracker.unsubscribe_from(self._tr.EYETRACKER_GAZE_DATA, self._on_gaze)
             self._tracker = None

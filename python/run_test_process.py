@@ -51,8 +51,12 @@ def settings_and_calibration(job: dict):
     if not scale:
         calibration = default_calibration(settings)
     else:
-        calibration = LuminanceCalibration.from_measurements(
-            scale["measurements"], f"scale {scale.get('name', '?')} (photometer)")
+        if len(scale.get("table") or []) == 101:       # measured by the ColorCAL tool
+            calibration = LuminanceCalibration.from_table(
+                scale["table"], f"scale {scale.get('name', '?')} (ColorCAL, measured)")
+        else:
+            calibration = LuminanceCalibration.from_measurements(
+                scale["measurements"], f"scale {scale.get('name', '?')} (photometer)")
         if settings.background_cd_m2 <= 0:
             settings = dataclasses.replace(settings, mean_luminance=float(
                 calibration.luminance_at(settings.background_brightness_pct)))

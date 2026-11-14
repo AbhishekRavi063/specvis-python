@@ -159,8 +159,8 @@ except ImportError:
         session(healthy, 25, fixation_monitoring=FIX_TRACKER)
         require(False, "eye tracker refused without the SDK")
     except SessionError as e:
-        require("pip install tobii-research" in str(e),
-                "eye tracker without the Tobii SDK -> says how to install it")
+        require("tracker-bridge" in str(e) and "tracker-setup" in str(e),
+                "eye tracker without the SDK and no bridge -> says what to start")
 
 print("6. eye-tracker check before the test")
 obs = GazeObserver(healthy, random.Random(29))

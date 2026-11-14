@@ -15,7 +15,7 @@ import numpy as np  # noqa: E402
 from specvis.core.gabor import GaborParameters, luminance_field  # noqa: E402
 from specvis.core.geometry import PhysicalScreen  # noqa: E402
 from specvis.core.luminance import LuminanceCalibration  # noqa: E402
-from specvis.procedure.perimetry import FULL, PerimetrySettings, run_perimetry  # noqa: E402
+from specvis.procedure.perimetry import FULL, SITA_FAST, PerimetrySettings, run_perimetry  # noqa: E402
 from specvis.stimulus.backend import NullBackend  # noqa: E402
 
 W, H = 3024, 1964                      # 14-inch MacBook Pro, full screen
@@ -35,9 +35,28 @@ def seen_contrast(brightness) -> float:
     Gabor's own shape -- so dithering noise averages out, as it does for a real eye."""
     lum = DISPLAY.luminance_at(np.asarray(brightness) * 100.0)
     mean = float(lum[0, 0])
-    if mean <= 0 or lum.shape != _TEMPLATE.shape:
+    template = _template_for(lum.shape)
+    if mean <= 0 or template is None:
         return float((lum.max() - lum.min()) / max(lum.max() + lum.min(), 1e-9))
-    return abs(float(((lum / mean - 1.0) * _TEMPLATE).sum() / (_TEMPLATE ** 2).sum()))
+    return abs(float(((lum / mean - 1.0) * template).sum() / (template ** 2).sum()))
+
+
+_TEMPLATES = {_TEMPLATE.shape: _TEMPLATE}
+
+
+def _template_for(shape):
+    """The Gabor's own shape at the patch's pixel size, for any screen geometry (the
+    patch is 2 deg wide, so its size in pixels fixes the pixels per degree)."""
+    if shape not in _TEMPLATES:
+        found = None
+        for ppd in np.arange(max(1.0, shape[1] / 2.0 - 2.0), shape[1] / 2.0 + 2.0, 0.05):
+            f = luminance_field(GaborParameters(2.0, 4.0, 45.0, 0.0, 2.0 / 6.0, 1.0, 1.0),
+                                ppd, ppd)
+            if f.shape == shape:
+                found = f - 1.0
+                break
+        _TEMPLATES[shape] = found
+    return _TEMPLATES[shape]
 
 def healthy(x: float, y: float) -> float:
     return math.log10(0.02 + 0.004 * math.hypot(x, y))
@@ -52,7 +71,8 @@ class Observer(NullBackend):
 
     def __init__(self, threshold, rng, false_alarm=0.02, lapse=0.02,
                  sees_blind_spot=False, abort_after=None, eye="R", press_ms=350.0,
-                 early_blank_presses=False, blind_spot=(15.5, -1.5)):
+                 early_blank_presses=False, blind_spot=(15.5, -1.5),
+                 width_mm=WIDTH_MM, dist_mm=DIST_MM):
         super().__init__(refresh_hz=120.0)
         self.press_ms, self.early_blank_presses = press_ms, early_blank_presses
         self.threshold, self.rng = threshold, rng
@@ -60,10 +80,12 @@ class Observer(NullBackend):
         self.sees_blind_spot, self.abort_after, self.eye = sees_blind_spot, abort_after, eye
         self.shown = []
         self.blind_spot = blind_spot     # centre (temporal deg, y deg); 5 x 5 deg
+        self.width_mm, self.dist_mm = width_mm, dist_mm   # the screen the test assumes
 
     def field_deg(self, px, py):
-        mm_x, mm_y = (px - W / 2) * WIDTH_MM / W, (H / 2 - py) * WIDTH_MM / W
-        return (math.degrees(math.atan(mm_x / DIST_MM)), math.degrees(math.atan(mm_y / DIST_MM)))
+        mm_x, mm_y = (px - W / 2) * self.width_mm / W, (H / 2 - py) * self.width_mm / W
+        return (math.degrees(math.atan(mm_x / self.dist_mm)),
+                math.degrees(math.atan(mm_y / self.dist_mm)))
 
     def present_train(self, polarities, frames_per_reversal, total_frames,
                       fixation=None, response_keys=()):
@@ -98,13 +120,17 @@ class Observer(NullBackend):
 
 
 def run(threshold, seed, eye="R", settings_overrides=None, **kw):
-    settings = PerimetrySettings(participant_id=kw.pop("pid", f"SIM{seed}"), eye=eye,
-                                 screen_width_mm=WIDTH_MM, viewing_distance_mm=DIST_MM,
-                                 pilot_mode=kw.pop("pilot_mode", True),
-                                 extent=kw.pop("extent", FULL),
-                                 **(settings_overrides or {}))
+    # The older tests were written for SITA Fast (the default until 2026-11-13) on the
+    # MacBook screen; keep that unless a test asks for something else.
+    values = dict(participant_id=kw.pop("pid", f"SIM{seed}"), eye=eye,
+                  screen_width_mm=WIDTH_MM, viewing_distance_mm=DIST_MM,
+                  pilot_mode=kw.pop("pilot_mode", True), extent=kw.pop("extent", FULL),
+                  strategy=SITA_FAST)
+    values.update(settings_overrides or {})
+    settings = PerimetrySettings(**values)
     table = kw.pop("table", None)
-    obs = Observer(threshold, random.Random(seed), eye=eye, **kw)
+    obs = Observer(threshold, random.Random(seed), eye=eye, width_mm=settings.screen_width_mm,
+                   dist_mm=settings.viewing_distance_mm, **kw)
     obs.open(W, H, 0.5)
     out = run_perimetry(settings, obs, prior_table=table, rng=random.Random(seed),
                         show_instructions=False)

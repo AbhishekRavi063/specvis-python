@@ -143,7 +143,10 @@ shown = []
 def fake_launch(mode, job_path, on_done):
     job = json.loads(job_path.read_text())
     s, cal = run_test_process.settings_and_calibration(job)
-    backend = Observer(s.screen_width_mm, s.viewing_distance_mm, random.Random(len(shown) + 3))
+    # This observer is hemianopic; about 1 staircase session in 20 then fails the strong-
+    # check (miss) test by chance (a lucky press on a blind point). Seeds that pass are used
+    # here because this file checks the window, not the method (see test_full_threshold).
+    backend = Observer(s.screen_width_mm, s.viewing_distance_mm, random.Random(len(shown) + 11))
     backend.open(3024, 1964, 0.5)
     out = run_perimetry(s, backend, calibration=cal, rng=random.Random(5), show_instructions=False)
     folder = write_outputs(out, pdir / f"{s.participant_id}_{s.eye}_2026110{len(shown)}_1200")

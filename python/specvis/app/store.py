@@ -246,9 +246,15 @@ class LuminanceScale:
     saturation: float = 0.0
     notes: str = ""                    # Specvis: additional information
     created: str = field(default_factory=lambda: time.strftime("%Y-%m-%d %H:%M"))
+    #: 101 values (cd/m2 at brightness 0..100 %) measured by the ColorCAL tool
+    #: (tools/calibrate_photometer.py). When present it is used as measured, instead of
+    #: Specvis's degree-2 fit through the six readings, which bends badly near black.
+    table: List[float] = field(default_factory=list)
 
     def calibration(self):
-        from ..core.luminance import LuminanceCalibration
+        from ..core.luminance import LuminanceCalibration, TABLE_SIZE
+        if len(self.table) == TABLE_SIZE:
+            return LuminanceCalibration.from_table(self.table, f"scale {self.name} (ColorCAL)")
         return LuminanceCalibration.from_measurements(self.measurements, f"scale {self.name}")
 
 

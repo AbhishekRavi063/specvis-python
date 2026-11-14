@@ -40,7 +40,7 @@ def require(condition: bool, what: str) -> None:
 
 print("1. the grid")
 for eye in ("R", "L"):
-    kept, dropped = grid_points(PerimetrySettings(eye=eye))
+    kept, dropped = grid_points(PerimetrySettings(eye=eye, extent=FULL))
     temporal = 1 if eye == "R" else -1
     require(len(kept) == 68 and len(dropped) == 4,
             f"{eye} eye: 68 test points, 4 blind-spot points dropped")

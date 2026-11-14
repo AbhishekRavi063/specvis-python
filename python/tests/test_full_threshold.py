@@ -13,9 +13,11 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from specvis.procedure.perimetry import (FULL_THRESHOLD, SITA_FAST,  # noqa: E402
-                                         PerimetrySettings, categorise, settings_from_dict,
-                                         settings_to_dict, write_outputs)
+from specvis.procedure.perimetry import (FULL, FULL_THRESHOLD, H24_2, SITA_FAST,  # noqa: E402
+                                         PerimetrySettings, categorise, contrast_range_db,
+                                         default_calibration, fit_problem, grid_points,
+                                         seeds_for, settings_from_dict, settings_to_dict,
+                                         write_outputs)
 from specvis.procedure.session import SessionError  # noqa: E402
 from specvis.threshold.base import Termination  # noqa: E402
 from specvis.threshold.full_threshold import (FullThresholdLocation,  # noqa: E402
@@ -145,7 +147,8 @@ require(loc.next_level() >= 0.01 - 1e-12, "never below the renderable floor")
 
 print("5. in the perimetry procedure")
 FT = dict(strategy=FULL_THRESHOLD)
-require(PerimetrySettings().strategy == SITA_FAST, "SITA Fast is still the default")
+require(PerimetrySettings().strategy == FULL_THRESHOLD,
+        "Full Threshold is the default (the team's choice)")
 for bad, why in ((dict(ft_coarse_step_db=0), "zero step"),
                  (dict(ft_start_contrast=5.0), "start outside the range")):
     try:
@@ -203,5 +206,54 @@ with tempfile.TemporaryDirectory() as tmp:
     require("Full Threshold" in json.dumps(meta), "session.json names the method")
     require("Full Threshold" in summary and "nan" not in summary,
             "summary.csv names the method; no 'nan' for the missing ZEST SD")
+
+print("6. the Humphrey 24-2 grid (the default)")
+require(PerimetrySettings().extent == H24_2, "the 24-2 is the default grid")
+for eye, sign in (("R", 1), ("L", -1)):
+    kept, dropped = grid_points(PerimetrySettings(eye=eye))
+    require(len(kept) == 52 and sorted(dropped) == sorted([(sign * 15, -3), (sign * 15, 3)]),
+            f"{eye} eye: 54 points, the 2 blind-spot points (15 deg temporal, +/-3) left out")
+    require(sorted(p for p in kept if abs(p[0]) == 27) == [(-sign * 27, -3), (-sign * 27, 3)],
+            f"{eye} eye: the 2 extra points at 27 deg are on the nasal side")
+    require({abs(v) for p in kept for v in p} <= {3, 9, 15, 21, 27},
+            f"{eye} eye: points at 3, 9, 15, 21 deg (and 27 nasal) only")
+require(set(seeds_for(PerimetrySettings())) == {(-9.0, 9.0), (9.0, 9.0), (-9.0, -9.0), (9.0, -9.0)},
+        "seeds at the Humphrey's primary points (+/-9, +/-9)")
+require(set(seeds_for(PerimetrySettings(extent=FULL))) == {(-9.0, 7.0), (9.0, 7.0), (-9.0, -7.0),
+                                                           (9.0, -7.0)},
+        "the old grid keeps its own seeds")
+require(fit_problem(PerimetrySettings(screen_width_mm=531, viewing_distance_mm=330), 1920, 1080)
+        is None, "fits a 24-inch 16:9 screen at 33 cm")
+require(fit_problem(PerimetrySettings(screen_width_mm=531, viewing_distance_mm=400), 1920, 1080)
+        is not None, "refused on a 24-inch screen at 40 cm (too far for 21 deg up/down)")
+
+print("7. the seeds start at the middle of the measurable dB range")
+s = PerimetrySettings(dithering=False)
+r = contrast_range_db(s, default_calibration(s))
+require(abs(r["middle_db"] - (r["strongest_db"] + r["faintest_db"]) / 2) < 0.02
+        and r["faintest_db"] == r["grey_step_db"],
+        f"no dithering: {r['strongest_db'] + 0.0:.1f} to {r['faintest_db']:.1f} dB "
+        f"(one grey step), middle {r['middle_db']:.1f}")
+r = contrast_range_db(PerimetrySettings(), default_calibration(PerimetrySettings()))
+require(r["faintest_db"] == 60.0, "dithered: the faintest end is the search floor (60 dB)")
+LAB = dict(strategy=FULL_THRESHOLD, extent=H24_2, screen_width_mm=302.0, viewing_distance_mm=240.0)
+for f, name, n_blind in ((healthy, "healthy", 0), (right_hemianopia, "hemianopia", 24)):
+    o, _ = run(f, 21, settings_overrides=LAB)
+    cats = collections.Counter(categorise(o, p) for p in o.points)
+    require(o.valid and len(o.points) == 52 and abs(cats["blind"] - n_blind) <= 1,
+            f"24-2, {name}: valid, 52 points, {cats['blind']} blind (expected {n_blind})")
+    require(o.contrast_range["ft_start_db"] == o.contrast_range["middle_db"]
+            and o.contrast_range["ft_start_rule"] == "middle of the measurable range",
+            f"24-2, {name}: seeds started at {o.contrast_range['ft_start_db']} dB, the middle")
+    first = [r["requested_contrast"] for r in o.trial_rows if r["kind"] == "zest"][:1]
+    require(first and abs(-20 * math.log10(first[0]) - o.contrast_range["middle_db"]) < 0.1,
+            f"24-2, {name}: the first test flash is at the middle")
+o, _ = run(healthy, 22, settings_overrides=dict(LAB, ft_start_contrast=0.1))
+require(o.contrast_range["ft_start_rule"] == "given" and abs(o.contrast_range["ft_start_db"] - 20) < 0.01,
+        "a given start is used as given (0.1 = 20 dB)")
+with tempfile.TemporaryDirectory() as tmp:
+    meta = json.loads((write_outputs(o, pathlib.Path(tmp) / "R") / "session.json").read_text())
+    require(meta["grid"] == H24_2 and "middle_db" in meta["contrast_range"],
+            "session.json records the grid and the dB range")
 
 sys.exit(0 if ok else 1)

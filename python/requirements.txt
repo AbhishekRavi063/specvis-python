@@ -7,3 +7,4 @@ numpy>=1.26,<3
 # Pinned to the versions the port was developed and tested against.
 psychopy==2026.2.5
 PyQt6==6.11.0
+psychopy-crs          # ColorCAL photometer (tools/calibrate_photometer.py)
