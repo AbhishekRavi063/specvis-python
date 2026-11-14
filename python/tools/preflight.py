@@ -94,9 +94,30 @@ def main() -> int:
         report(False, "no ColorCAL-measured luminance scale yet",
                "python/specvis.sh calibrate --name \"Lab screen\" --uniformity")
 
-    print("4. eye tracker (bridge)")
+    try:
+        import tobii_research as tr              # the app's own Python has the SDK
+    except ImportError:
+        tr = None
+    print("4. eye tracker" + (" (Tobii SDK in the app)" if tr else " (bridge)"))
     if args.no_tracker:
         print("        skipped")
+    elif tr is not None:
+        trackers = tr.find_all_eyetrackers()
+        if not trackers:
+            report(False, "no Tobii eye tracker found",
+                   "check the USB cable, and that Tobii Pro Eye Tracker Manager sees it; "
+                   "close Tobii Pro Lab")
+        else:
+            t = trackers[0]
+            got = []
+            cb = lambda d: got.append(bool(d.get("right_gaze_point_validity")  # noqa: E731
+                                           or d.get("left_gaze_point_validity")))
+            t.subscribe_to(tr.EYETRACKER_GAZE_DATA, cb, as_dictionary=True)
+            time.sleep(2.0)
+            t.unsubscribe_from(tr.EYETRACKER_GAZE_DATA, cb)
+            report(len(got) > 0, f"{t.model} ({t.serial_number}): {len(got) / 2:.0f} samples/s, "
+                   f"{sum(got)} with a valid eye (look at the screen to see valid ones)",
+                   "no gaze data: check the tracker in Eye Tracker Manager")
     else:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
