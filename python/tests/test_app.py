@@ -112,10 +112,13 @@ require(win.people_list.count() == 2, "both participants in step 1")
 win.people_list.setCurrentRow(1)                    # PILOT02
 require(win.current_participant().id == "PILOT02", "PILOT02 selected")
 
-win.preset_box.setCurrentIndex(1)                   # lab monitor pilot: width unknown
+win.preset_box.setCurrentIndex(1)                   # lab monitor: the measured BenQ
 win.apply_preset()
+require(abs(win.settings.screen_width_mm - 544.0) < 1e-9,
+        "lab preset carries the measured width (BenQ 24.5\", 544 mm)")
+win.width_cm.setValue(0.0)                          # a screen whose width is not entered
 require(any("screen width" in p for p in win.problems()),
-        "lab preset without a width: start is blocked until it is measured")
+        "no width: start is blocked until it is measured")
 require(not win.start_button.isEnabled(), "start button disabled")
 
 win.preset_box.setCurrentIndex(0)                   # MacBook practice

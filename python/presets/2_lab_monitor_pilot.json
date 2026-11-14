@@ -1,8 +1,8 @@
 {
   "name": "Lab monitor - try-out (blind-spot check)",
-  "description": "Trying the full test on the lab monitor: 24-2 (52 points) at 33 cm with a chin rest, Full Threshold 4-2 staircase (OPI), seeds at the middle of the dB range, fixation checked at each person's own blind spot. MEASURE the visible screen width and save it here (Save settings); choose the ColorCAL luminance scale in Step 2.",
+  "description": "Trying the full test on the lab monitor: 24-2 (52 points) at 33 cm with a chin rest, Full Threshold 4-2 staircase (OPI), seeds at the middle of the dB range, fixation checked at each person's own blind spot. choose the ColorCAL luminance scale in Step 2. Screen: BenQ 24.5\", 544 mm wide; choose the ColorCAL scale \"Lab screen\".",
   "settings": {
-    "screen_width_mm": 0.0,
+    "screen_width_mm": 544.0,
     "viewing_distance_mm": 330.0,
     "extent": "24-2",
     "pilot_mode": true,

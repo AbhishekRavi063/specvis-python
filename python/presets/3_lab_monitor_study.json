@@ -1,8 +1,8 @@
 {
   "name": "Lab monitor - eye tracker, 24-2 without top/bottom rows",
-  "description": "Eye tracker (Tobii Pro Fusion, 50-80 cm): 24-2 positions without the +/-21 deg rows and the 2 nasal points, 42 spots, at 52 cm with a chin rest. Full Threshold 4-2 staircase (OPI). Start python/specvis.sh tracker-bridge first. Use the measured width and the ColorCAL scale. For comparing grids, run the \"Aflah grid\" eye-tracker preset on the same person.",
+  "description": "Eye tracker (Tobii Pro Fusion, 50-80 cm): 24-2 positions without the +/-21 deg rows and the 2 nasal points, 42 spots, at 52 cm with a chin rest. Full Threshold 4-2 staircase (OPI). Start python/specvis.sh tracker-bridge first. Screen: BenQ 24.5\", 544 mm wide (picture area as the monitor reports it). Choose the ColorCAL scale \"Lab screen\". For comparing grids, run the \"Aflah grid\" eye-tracker preset on the same person.",
   "settings": {
-    "screen_width_mm": 0.0,
+    "screen_width_mm": 544.0,
     "viewing_distance_mm": 520.0,
     "extent": "24-2 central",
     "pilot_mode": true,
