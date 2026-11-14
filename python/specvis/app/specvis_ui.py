@@ -862,6 +862,12 @@ class FixMonitorDialog(QDialog):
         self.limit = _spin(0.0, 100.0, 100 * s.max_fixation_loss_rate, 5.0, 0, "%")
         self.tolerance = _spin(1.0, 5.0, s.fixation_tolerance_deg, 0.5, 1, "deg")
         self.hold = _spin(0.0, 1000.0, s.fixation_hold_ms, 50.0, 0, "ms")
+        self.cal = QCheckBox("Calibrate the eye tracker at the start (Tobii 5-point)")
+        self.cal.setChecked(s.tracker_calibrate)
+        self.val = QCheckBox("Then measure its accuracy with the tested eye (5 dots)")
+        self.val.setChecked(s.tracker_validate)
+        self.max_centre = _spin(0.2, 3.0, s.tracker_max_centre_error_deg, 0.1, 1, "deg")
+        self.max_mean = _spin(0.2, 3.0, s.tracker_max_mean_error_deg, 0.1, 1, "deg")
         form.addRow(_label("Blind spot (Heijl-Krakau)", "note"))
         form.addRow(self.search)
         form.addRow("Blindspot distance from fix. point X (temporal)", self.temporal)
@@ -874,6 +880,10 @@ class FixMonitorDialog(QDialog):
         form.addRow(_label("Eye tracker / mouse", "note"))
         form.addRow("Eye must stay within", self.tolerance)
         form.addRow("Eye on the + before each patch", self.hold)
+        form.addRow(self.cal)
+        form.addRow(self.val)
+        form.addRow("Accuracy needed at the centre (our suggestion)", self.max_centre)
+        form.addRow("Accuracy needed on average (our suggestion)", self.max_mean)
         form.addRow(_label("A patch is shown only once the eye is on the +. A trial in which "
                            "the eye left the + is thrown away and tested again later.", "note"))
         form.addRow("Fixation losses allowed, at most", self.limit)
@@ -890,7 +900,11 @@ class FixMonitorDialog(QDialog):
                     p_blind_spot=self.share.value() / 100.0,
                     max_fixation_loss_rate=self.limit.value() / 100.0,
                     fixation_tolerance_deg=self.tolerance.value(),
-                    fixation_hold_ms=self.hold.value())
+                    fixation_hold_ms=self.hold.value(),
+                    tracker_calibrate=self.cal.isChecked(),
+                    tracker_validate=self.val.isChecked(),
+                    tracker_max_centre_error_deg=self.max_centre.value(),
+                    tracker_max_mean_error_deg=self.max_mean.value())
 
 
 def _range_line(s: PerimetrySettings, cal) -> str:

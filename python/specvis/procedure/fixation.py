@@ -39,6 +39,7 @@ FIX_BLIND_SPOT, FIX_NONE, FIX_TRACKER, FIX_MOUSE = "blind spot", "none", "eye tr
 FIXATION_MODES = (FIX_BLIND_SPOT, FIX_NONE, FIX_TRACKER, FIX_MOUSE)
 GAZE_MODES = (FIX_TRACKER, FIX_MOUSE)          # the modes that watch the eye
 BRIDGE_PORT = 5555                             # tools/tobii_bridge.py -> the app (UDP)
+BRIDGE_CMD_PORT = BRIDGE_PORT + 1              # the app -> the bridge: calibration commands
 
 
 class FixationMonitor:
@@ -79,6 +80,28 @@ class FixationMonitor:
 
     def patch_shown(self, t0: float, t1: float) -> None:
         """Called after every patch with its start and end (time.perf_counter())."""
+
+    # -- calibration (eye trackers that can be calibrated from the app) -----------------
+    calibration_supported = False
+
+    def cal_enter(self) -> None:
+        raise NotImplementedError
+
+    def cal_point(self, x: float, y: float) -> bool:
+        """Collect calibration data while the person looks at (x, y): fractions of the
+        display area, from the top-left. True when the tracker accepted the point."""
+        raise NotImplementedError
+
+    def cal_compute(self) -> dict:
+        """Compute and apply the calibration: {"ok": bool, "status": str, "points": n}."""
+        raise NotImplementedError
+
+    def cal_leave(self) -> None:
+        raise NotImplementedError
+
+    def target_shown(self, x_deg: float, y_deg: float) -> None:
+        """A calibration / validation dot is now at (x_deg, y_deg). Real trackers ignore
+        this; simulated observers use it to look there."""
 
     def describe(self) -> str:
         return "no eye tracking"
@@ -200,6 +223,59 @@ class TobiiMonitor(FixationMonitor):
 
     # -- the Python 3.10 bridge ----------------------------------------------------------
 
+    calibration_supported = True
+
+    # -- calibration: through the SDK here, or through the bridge -------------------------
+
+    def _cmd(self, cmd: str, timeout_s: float = 15.0, **kw) -> dict:
+        """Send a command to the bridge and wait for its answer."""
+        self._cmd_id = getattr(self, "_cmd_id", 0) + 1
+        msg = dict(id=self._cmd_id, cmd=cmd, **kw)
+        sock = self._cmd_sock
+        sock.settimeout(0.5)
+        sock.sendto(json.dumps(msg).encode("utf-8"), ("127.0.0.1", self._cmd_port))
+        end = time.perf_counter() + timeout_s
+        while time.perf_counter() < end:
+            try:
+                reply = json.loads(sock.recv(4096).decode("utf-8"))
+            except socket.timeout:
+                continue
+            if reply.get("id") == self._cmd_id:
+                return reply
+        raise RuntimeError(f"the eye-tracker bridge did not answer '{cmd}' "
+                           "(is python/specvis.sh tracker-bridge still running?)")
+
+    def cal_enter(self) -> None:
+        if getattr(self, "_sock", None) is not None:
+            self._cmd("cal_enter")
+            return
+        self._calib = self._tr.ScreenBasedCalibration(self._tracker)
+        self._calib.enter_calibration_mode()
+
+    def cal_point(self, x: float, y: float) -> bool:
+        if getattr(self, "_sock", None) is not None:
+            return bool(self._cmd("cal_point", x=x, y=y).get("ok"))
+        tr = self._tr
+        status = self._calib.collect_data(x, y)
+        if status != tr.CALIBRATION_STATUS_SUCCESS:
+            status = self._calib.collect_data(x, y)
+        return status == tr.CALIBRATION_STATUS_SUCCESS
+
+    def cal_compute(self) -> dict:
+        if getattr(self, "_sock", None) is not None:
+            r = self._cmd("cal_compute", timeout_s=30.0)
+            return dict(ok=bool(r.get("ok")), status=r.get("status", r.get("error", "")),
+                        points=r.get("points", 0))
+        res = self._calib.compute_and_apply()
+        return dict(ok=res.status == self._tr.CALIBRATION_STATUS_SUCCESS,
+                    status=str(res.status), points=len(res.calibration_points))
+
+    def cal_leave(self) -> None:
+        if getattr(self, "_sock", None) is not None:
+            self._cmd("cal_leave")
+            return
+        self._calib.leave_calibration_mode()
+
     def _begin_bridge(self, port: int = BRIDGE_PORT, wait_s: float = 3.0) -> None:
         """Gaze from tools/tobii_bridge.py over UDP. Fails if nothing arrives in time."""
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -224,6 +300,8 @@ class TobiiMonitor(FixationMonitor):
                 "terminal:  python/specvis.sh tracker-bridge   (it needs Python 3.10 and "
                 "tobii-research: python/specvis.sh tracker-setup)")
         self._handle_packet(first)
+        self._cmd_port = port + 1
+        self._cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._running = True
         self._thread = threading.Thread(target=self._listen, daemon=True)
         self._thread.start()
@@ -258,6 +336,7 @@ class TobiiMonitor(FixationMonitor):
             self._thread.join(timeout=1.0)
             self._sock.close()
             self._sock = None
+            self._cmd_sock.close()
         if self._tracker is not None:
             self._tracker.unsubscribe_from(self._tr.EYETRACKER_GAZE_DATA, self._on_gaze)
             self._tracker = None

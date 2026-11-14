@@ -12,7 +12,11 @@ is sent to the app on 127.0.0.1 (port 5555). Uses only the standard library and 
 Before a session the tracker's display area (the stimulus screen) must be set up, and
 the participant calibrated, in Tobii Pro Eye Tracker Manager.
 
-Each UDP packet is JSON: {"t": device time (us), "l": [x, y, valid], "r": [x, y, valid],
+The app can also run the Tobii calibration through the bridge: it sends JSON commands to
+127.0.0.1:5556 ({"id": n, "cmd": "cal_enter" | "cal_point" (with "x", "y" as display-area
+fractions) | "cal_compute" | "cal_leave" | "ping"}) and gets {"id": n, "ok": ..., ...} back.
+
+Each UDP gaze packet is JSON: {"t": device time (us), "l": [x, y, valid], "r": [x, y, valid],
 "model": ..., "serial": ...}, x and y as fractions of the display area (0-1, top-left),
 null when invalid.
 """
@@ -37,18 +41,47 @@ def main() -> int:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     dest = ("127.0.0.1", args.port)
     count = [0]
+    cmd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)       # commands from the app
+    cmd.bind(("127.0.0.1", args.port + 1))
 
     def send(sample: dict) -> None:
         sock.sendto(json.dumps(sample).encode("utf-8"), dest)
         count[0] += 1
 
+    def serve(handle, wait_s: float) -> None:
+        """Answer every command waiting (or arriving within wait_s)."""
+        cmd.settimeout(wait_s)
+        while True:
+            try:
+                data, addr = cmd.recvfrom(4096)
+            except (socket.timeout, BlockingIOError):
+                return
+            try:
+                msg = json.loads(data.decode("utf-8"))
+                reply = handle(msg)
+            except Exception as e:                     # noqa: BLE001 -- told to the app
+                msg, reply = locals().get("msg", {}), dict(ok=False, error=str(e))
+            reply["id"] = msg.get("id") if isinstance(msg, dict) else None
+            cmd.sendto(json.dumps(reply).encode("utf-8"), addr)
+            print(f"  command {msg.get('cmd') if isinstance(msg, dict) else '?'}: "
+                  f"{'ok' if reply.get('ok') else reply}", flush=True)
+            cmd.settimeout(0.0)
+
     if args.fake:
-        print(f"FAKE gaze -> 127.0.0.1:{args.port} (centre of the screen). Ctrl-C to stop.")
+        look = [0.5, 0.5]
+
+        def fake_handle(msg):
+            if msg.get("cmd") == "fake_look":          # tests: where the pretend eye looks
+                look[:] = [float(msg["x"]), float(msg["y"])]
+            return dict(ok=True, status="calibration_status_success", points=5)
+
+        print(f"FAKE gaze -> 127.0.0.1:{args.port}; commands on {args.port + 1}. "
+              "Ctrl-C to stop.")
         try:
             while True:
-                send({"t": int(time.time() * 1e6), "l": [0.5, 0.5, 1], "r": [0.5, 0.5, 1],
-                      "model": "FAKE", "serial": "none"})
-                time.sleep(1 / 120)
+                send({"t": int(time.time() * 1e6), "l": [look[0], look[1], 1],
+                      "r": [look[0], look[1], 1], "model": "FAKE", "serial": "none"})
+                serve(fake_handle, 1 / 120)
         except KeyboardInterrupt:
             return 0
 
@@ -81,18 +114,51 @@ def main() -> int:
         send({"t": data.get("system_time_stamp"), "l": point(data, "left"),
               "r": point(data, "right"), "model": model, "serial": serial})
 
+    calib = tr.ScreenBasedCalibration(tracker)
+    in_cal = [False]
+
+    def handle(msg):
+        c = msg.get("cmd")
+        if c == "ping":
+            return dict(ok=True, model=model, serial=serial)
+        if c == "cal_enter":
+            if not in_cal[0]:
+                calib.enter_calibration_mode()
+                in_cal[0] = True
+            return dict(ok=True)
+        if c == "cal_point":
+            x, y = float(msg["x"]), float(msg["y"])
+            status = calib.collect_data(x, y)
+            if status != tr.CALIBRATION_STATUS_SUCCESS:      # Tobii: try a point once more
+                status = calib.collect_data(x, y)
+            return dict(ok=status == tr.CALIBRATION_STATUS_SUCCESS, status=str(status))
+        if c == "cal_compute":
+            res = calib.compute_and_apply()
+            return dict(ok=res.status == tr.CALIBRATION_STATUS_SUCCESS, status=str(res.status),
+                        points=len(res.calibration_points))
+        if c == "cal_leave":
+            if in_cal[0]:
+                calib.leave_calibration_mode()
+                in_cal[0] = False
+            return dict(ok=True)
+        return dict(ok=False, error=f"unknown command {c!r}")
+
     tracker.subscribe_to(tr.EYETRACKER_GAZE_DATA, on_gaze, as_dictionary=True)
-    print(f"Sending gaze to 127.0.0.1:{args.port}. Leave this running; Ctrl-C to stop.")
+    print(f"Sending gaze to 127.0.0.1:{args.port}; commands on {args.port + 1}. "
+          "Leave this running; Ctrl-C to stop.")
     try:
-        last = 0
+        last, t_last = 0, time.time()
         while True:
-            time.sleep(2.0)
-            n = count[0]
-            print(f"  {(n - last) / 2.0:6.1f} samples/s", flush=True)
-            last = n
+            serve(handle, 0.25)
+            if time.time() - t_last >= 2.0:
+                n = count[0]
+                print(f"  {(n - last) / (time.time() - t_last):6.1f} samples/s", flush=True)
+                last, t_last = n, time.time()
     except KeyboardInterrupt:
         pass
     finally:
+        if in_cal[0]:
+            calib.leave_calibration_mode()
         tracker.unsubscribe_from(tr.EYETRACKER_GAZE_DATA, on_gaze)
     return 0
 

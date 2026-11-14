@@ -55,6 +55,7 @@ import json
 import math
 import pathlib
 import random
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
@@ -77,6 +78,12 @@ from .session import Aborted, SessionError
 
 SEEN_KEY = "space"
 ABORT_KEY = "escape"
+
+#: Tobii's standard 5-point calibration: the centre and 4 points in from the corners,
+#: as fractions of the display area (top-left 0,0).
+TRACKER_CAL_POINTS = ((0.5, 0.5), (0.1, 0.1), (0.9, 0.1), (0.1, 0.9), (0.9, 0.9))
+#: Where the accuracy is measured, in field degrees: the centre and around the test area.
+TRACKER_VAL_POINTS = ((0.0, 0.0), (-10.0, 8.0), (10.0, 8.0), (-10.0, -8.0), (10.0, -8.0))
 
 #: Aflah's 72-point grid (untitled.py): 4 deg apart across, 6 deg up/down, no point on
 #: a midline.
@@ -211,6 +218,14 @@ class PerimetrySettings:
     fixation_tolerance_deg: float = 2.5   # the eye must stay within this of the +
     fixation_hold_ms: float = 200.0       # held this long before a patch is shown
     fixation_wait_ms: float = 5000.0      # then a "look at the +" reminder
+    #: Eye tracker: calibrate each person at the start, Tobii-style (a dot that shrinks
+    #: and bursts at the centre and near the 4 corners), then measure the accuracy at 5
+    #: dots with the tested eye. The accuracy limits are our suggestion (not from a
+    #: published source): well under the 2.5 deg fixation window.
+    tracker_calibrate: bool = True
+    tracker_validate: bool = True
+    tracker_max_centre_error_deg: float = 1.0
+    tracker_max_mean_error_deg: float = 1.5
     answer_key: str = "space"
     pause_key: str = "p"
     cancel_key: str = "escape"
@@ -747,6 +762,157 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 waited = held = 0.0
             wait(POLL_MS)
 
+    def frames(ms: float) -> int:
+        return max(1, int(round(ms / 1000.0 * refresh)))
+
+    def dot(radius_px: float, burst: bool = False) -> np.ndarray:
+        """A white calibration dot with a dark centre (or, burst, a ring of small dots),
+        on the background."""
+        r = max(3, int(math.ceil(radius_px * (2.2 if burst else 1.0))))
+        yy, xx = np.mgrid[-r:r + 1, -r:r + 1].astype(float)
+        dist = np.hypot(xx, yy)
+        img = np.full(dist.shape, background, dtype=float)
+        if burst:
+            for k in range(10):
+                a = 2 * math.pi * k / 10
+                cx, cy = 0.75 * r * math.cos(a), 0.75 * r * math.sin(a)
+                img[np.hypot(xx - cx, yy - cy) <= max(2.0, radius_px * 0.25)] = 1.0
+        else:
+            img[dist <= radius_px] = 1.0
+            img[dist <= max(1.5, radius_px * 0.2)] = 0.0
+        return img
+
+    def show_dot(centre: Tuple[float, float], radius_px: float, ms: float,
+                 burst: bool = False) -> None:
+        backend.present_train([Texture(dot(radius_px, burst), centre)], 0, frames(ms),
+                              fixation=None)
+
+    def shrinking_dot(centre: Tuple[float, float], x_deg: float, y_deg: float) -> float:
+        """The Tobii-style dot: appears large and shrinks, so the eye settles on it.
+        Returns the small radius it ends at."""
+        monitor.target_shown(x_deg, y_deg)
+        big, small = 0.9 * ppd_x, 0.25 * ppd_x
+        for k in range(12):
+            show_dot(centre, big + (small - big) * k / 11, 70.0)
+        return small
+
+    def hold_dot_while(centre: Tuple[float, float], radius: float, job) -> object:
+        """Keep the small dot on screen while ``job`` runs (the tracker collects data)."""
+        out = {}
+
+        def run():
+            try:
+                out["value"] = job()
+            except BaseException as e:                 # noqa: BLE001 -- raised below
+                out["error"] = e
+        th = threading.Thread(target=run, daemon=True)
+        th.start()
+        while th.is_alive():
+            show_dot(centre, radius, 50.0)
+        if "error" in out:
+            raise out["error"]
+        return out.get("value")
+
+    def calibrate_tracker() -> dict:
+        """Tobii's standard 5-point calibration, run from here (through the SDK or the
+        bridge), so every person is calibrated in the same way just before the test."""
+        w, h = width_px, height_px
+        monitor.cal_enter()
+        accepted = []
+        try:
+            for fx, fy in TRACKER_CAL_POINTS:
+                centre = (fx * w, fy * h)
+                xd, yd = to_deg(*centre)
+                r = shrinking_dot(centre, xd, yd)
+                ok = hold_dot_while(centre, r, lambda: monitor.cal_point(fx, fy))
+                accepted.append(bool(ok))
+                show_dot(centre, r, 150.0, burst=True)
+            result = monitor.cal_compute()
+        finally:
+            monitor.cal_leave()
+            monitor.target_shown(0.0, 0.0)
+        result["points_accepted"] = accepted
+        return result
+
+    def validate_tracker() -> dict:
+        """Accuracy with the tested eye: the median distance between gaze and each dot."""
+        pts = []
+        for xd, yd in TRACKER_VAL_POINTS:
+            centre = to_px(xd, yd)
+            r = shrinking_dot(centre, xd, yd)
+            got = []
+            for _ in range(int(700 / 50)):
+                show_dot(centre, r, 50.0)
+                got.append(monitor.current())
+            valid = [g for g in got if g is not None]
+            err = (float(np.median([math.hypot(g[0] - xd, g[1] - yd) for g in valid]))
+                   if valid else float("nan"))
+            pts.append(dict(x_deg=xd, y_deg=yd, error_deg=round(err, 2),
+                            valid_fraction=round(len(valid) / len(got), 2)))
+        monitor.target_shown(0.0, 0.0)          # back to the + for the test
+        good = [p for p in pts if p["valid_fraction"] >= 0.5 and not math.isnan(p["error_deg"])]
+        centre_err = pts[0]["error_deg"]
+        mean_err = float(np.mean([p["error_deg"] for p in good])) if good else float("nan")
+        passed = (len(good) == len(pts)
+                  and centre_err <= settings.tracker_max_centre_error_deg
+                  and mean_err <= settings.tracker_max_mean_error_deg)
+        return dict(points=pts, centre_error_deg=centre_err,
+                    mean_error_deg=round(mean_err, 2), passed=passed)
+
+    def calibrate_and_validate() -> None:
+        other = "LEFT" if settings.eye == "R" else "RIGHT"
+        attempt = 0
+        while True:
+            attempt += 1
+            if settings.tracker_calibrate and monitor.calibration_supported:
+                key = backend.show_screen(
+                    "Eye tracker calibration.\n\nKeep BOTH eyes open for now, chin on the "
+                    "chin rest.\nA white dot will appear in 5 places. Look at the black "
+                    "centre of each dot until it bursts.\n\n"
+                    f"Press {seen_key.upper()} to start   ({abort_key.upper()} stops).",
+                    keys=[seen_key, abort_key])
+                if key == abort_key:
+                    raise Aborted
+                cal = calibrate_tracker()
+                gaze_check["calibration"] = dict(cal, attempt=attempt)
+                if not cal.get("ok"):
+                    key = backend.show_screen(
+                        f"Calibration did not work ({cal.get('status')}).\n\nCheck the chin "
+                        "rest and that both eyes are seen by the tracker.\n\n"
+                        f"{seen_key.upper()} = go on anyway   R = calibrate again   "
+                        f"{abort_key.upper()} = stop", keys=[seen_key, "r", abort_key])
+                    if key == abort_key:
+                        raise Aborted
+                    if key == "r":
+                        continue
+            if not settings.tracker_validate:
+                gaze_check["passed"] = True
+                return
+            key = backend.show_screen(
+                f"Now cover your {other} eye.\n\nThe dot will appear 5 more times. Look at "
+                "its black centre each time.\n\n"
+                f"Press {seen_key.upper()} to start   ({abort_key.upper()} stops).",
+                keys=[seen_key, abort_key])
+            if key == abort_key:
+                raise Aborted
+            val = validate_tracker()
+            gaze_check["validation"] = dict(val, attempt=attempt)
+            gaze_check["passed"] = bool(val["passed"])
+            gaze_check["offset_deg"] = val["centre_error_deg"]
+            if val["passed"]:
+                return
+            key = backend.show_screen(
+                f"Eye tracker accuracy is too low: centre {val['centre_error_deg']:.1f} deg, "
+                f"average {val['mean_error_deg']:.1f} deg "
+                f"(limits {settings.tracker_max_centre_error_deg:g} / "
+                f"{settings.tracker_max_mean_error_deg:g}).\n\n"
+                f"R = calibrate again   {seen_key.upper()} = go on anyway   "
+                f"{abort_key.upper()} = stop", keys=[seen_key, "r", abort_key])
+            if key == abort_key:
+                raise Aborted
+            if key != "r":
+                return
+
     def check_gaze_at_start() -> None:
         """Before the test: is the tracker's gaze on the + when the person looks at it?
         A large offset means the calibration is off."""
@@ -1036,7 +1202,11 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 raise SessionError(f"Fixation monitor ({settings.fixation_monitoring}): {e}")
             monitor_started = True
         if watching and show_instructions:
-            check_gaze_at_start()
+            if monitor.calibration_supported and (settings.tracker_calibrate
+                                                  or settings.tracker_validate):
+                calibrate_and_validate()
+            else:
+                check_gaze_at_start()
         if show_instructions:
             key = backend.show_screen(
                 f"Cover your {'LEFT' if settings.eye == 'R' else 'RIGHT'} eye.\n\n"
