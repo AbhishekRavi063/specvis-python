@@ -34,7 +34,8 @@ from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
 
 from ..core.gabor import GaborParameters, render_brightness
 from ..core.luminance import LuminanceCalibration
-from ..procedure.perimetry import (CENTRAL, EXTENTS, FAILURE_REASONS, FULL, PerimetrySettings,
+from ..procedure.perimetry import (CENTRAL, EXTENT_NAMES, EXTENTS, FAILURE_REASONS, FULL,
+                                   PerimetrySettings,
                                    blind_spot_position, field_half_degrees, fit_problem,
                                    grid_points, settings_from_dict, settings_to_dict)
 from ..procedure.prior_table import PriorTable, build_prior_table
@@ -534,7 +535,8 @@ class MainWindow(QMainWindow):
         grid = QGridLayout()
         s = self.settings
         self.extent_box = QComboBox()
-        self.extent_box.addItems(list(EXTENTS))
+        for e in EXTENTS:
+            self.extent_box.addItem(EXTENT_NAMES[e], e)
         self.pilot = QCheckBox("Pilot mode (the 15-20 table people: no starting guesses, "
                                "builds the normal table)")
         self.sd_stop = _spin(0.05, 0.5, s.zest.sd_stop, 0.01, 2, "log10")
@@ -619,7 +621,7 @@ class MainWindow(QMainWindow):
         self.window_ms.setValue(s.response_window_ms)
         self.iti_lo.setValue(s.iti_ms[0])
         self.iti_hi.setValue(s.iti_ms[1])
-        self.extent_box.setCurrentText(s.extent)
+        self.extent_box.setCurrentIndex(max(0, self.extent_box.findData(s.extent)))
         self.pilot.setChecked(s.pilot_mode)
         self.sd_stop.setValue(s.zest.sd_stop)
         self.min_trials.setValue(s.zest.min_trials)
@@ -644,7 +646,7 @@ class MainWindow(QMainWindow):
             orientation_degrees=self.orientation.value(), stimulus_ms=self.stim_ms.value(),
             fixation_ms=self.fix_ms.value(), response_window_ms=self.window_ms.value(),
             iti_ms=(self.iti_lo.value(), max(self.iti_lo.value(), self.iti_hi.value())),
-            extent=self.extent_box.currentText(), pilot_mode=self.pilot.isChecked(),
+            extent=self.extent_box.currentData() or self.settings.extent, pilot_mode=self.pilot.isChecked(),
             p_blank=self.p_blank.value() / 100.0, p_high=self.p_high.value() / 100.0,
             p_blind_spot=self.p_blind.value() / 100.0,
             break_every_trials=self.break_every.value())

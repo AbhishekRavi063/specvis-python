@@ -43,7 +43,8 @@ from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDateEdit,
 
 from ..core.gabor import GaborParameters, minimum_renderable_contrast, render_brightness
 from ..core.luminance import MEASUREMENT_POINTS, LuminanceCalibration
-from ..procedure.perimetry import (CENTRAL, EXTENTS, FAILURE_REASONS, FULL, FULL_THRESHOLD, SITA_FAST,
+from ..procedure.perimetry import (CENTRAL, EXTENT_NAMES, EXTENTS, FAILURE_REASONS, FULL,
+                                   FULL_THRESHOLD, H24_2, SITA_FAST,
                                    STRATEGIES,
                                    STRATEGY_NAMES, PerimetrySettings, background_for,
                                    blind_spot_position, default_calibration,
@@ -1361,13 +1362,17 @@ class SpecvisWindow(QMainWindow):
         self.f_dither.toggled.connect(self._read)
         right.addLayout(_row([self.f_dither]))
         right.addWidget(_separator())
-        self.f_grid = _fixed(QComboBox(), 85, H)
-        self.f_grid.addItems(list(EXTENTS))
-        self.f_grid.setToolTip("full: +/-21 x +/-13 deg (68 points); central: +/-13 deg")
-        self.f_spacing = _fixed(_readonly("4 / 6"), 85, H)
-        self.f_spacing.setToolTip("Grid spacing: 4 deg across, 6 deg up/down; no point on a midline")
-        right.addLayout(_row([_lab("Dist. between s. XY (°)", 220, H, 18), self.f_spacing,
-                              self.f_grid], spacing=10))
+        self.f_grid = _fixed(QComboBox(), 450, H)
+        for e in EXTENTS:
+            self.f_grid.addItem(EXTENT_NAMES[e], e)
+        self.f_grid.setToolTip("The test grid. With the eye tracker (Tobii Pro Fusion: 50-80 cm) "
+                               "use '24-2 without top/bottom rows' (50-53 cm) or 'Aflah grid' "
+                               "(50-60 cm). The full 24-2 needs about 33-37 cm on a 24\" screen.")
+        right.addLayout(_row([self.f_grid]))
+        self.f_spacing = _fixed(_readonly("6 / 6"), 85, H)
+        self.f_spacing.setToolTip("Grid spacing across / up-down, in degrees; no point on a midline")
+        right.addLayout(_row([_lab("Dist. between s. XY (°)", 220, H, 18), self.f_spacing],
+                             spacing=10))
         right.addWidget(_separator())
         self.f_preview = QLabel()
         self.f_preview.setObjectName("display")
@@ -1590,7 +1595,7 @@ class SpecvisWindow(QMainWindow):
         self.f_bg.setValue(s.background_cd_m2 if s.background_cd_m2 > 0 else 10.0)
         self.f_dither.setChecked(s.dithering)
         self.f_procedure.setCurrentIndex(STRATEGIES.index(s.strategy))
-        self.f_grid.setCurrentText(s.extent)
+        self.f_grid.setCurrentIndex(max(0, self.f_grid.findData(s.extent)))
         self.f_fix_colour.setCurrentText(s.fixation_colour)
         self.f_fix_mon.setCurrentText(next((k for k, v in FIX_CHOICES.items()
                                             if v == s.fixation_monitoring), "Blindspot"))
@@ -1614,7 +1619,7 @@ class SpecvisWindow(QMainWindow):
             iti_ms=(self.f_iti_c.value(), self.f_iti_c.value() + self.f_iti_r.value()),
             background_cd_m2=self.f_bg.value(), dithering=self.f_dither.isChecked(),
             strategy=STRATEGIES[self.f_procedure.currentIndex()],
-            extent=self.f_grid.currentText(),
+            extent=self.f_grid.currentData() or H24_2,
             fixation_colour=self.f_fix_colour.currentText(),
             fixation_monitoring=FIX_CHOICES.get(self.f_fix_mon.currentText(), FIX_BLIND_SPOT),
             answer_key=self.f_key_answer.currentText(), pause_key=self.f_key_pause.currentText(),
@@ -1640,6 +1645,12 @@ class SpecvisWindow(QMainWindow):
             p = fit_problem(self.settings, w, h)
             if p:
                 out.append("Step 2: " + p)
+        if (self.settings.fixation_monitoring == FIX_TRACKER
+                and not 500.0 <= self.settings.viewing_distance_mm <= 800.0):
+            out.append("Step 2: the eye tracker (Tobii Pro Fusion) works only 50-80 cm from the "
+                       "eye; the viewing distance is "
+                       f"{self.settings.viewing_distance_mm / 10:.0f} cm. Use a grid that fits "
+                       "at 50 cm or more (24-2 without top/bottom rows, or Aflah grid).")
         try:
             self.settings.validate()
         except Exception as e:                         # noqa: BLE001 -- shown to the user
@@ -1693,6 +1704,7 @@ class SpecvisWindow(QMainWindow):
         self.f_db_range.setText(f"{-20 * math.log10(top) + 0.0:.1f} to {-20 * math.log10(lo_c):.1f} dB"
                                 f"   (contrast {top:.2f} to {lo_c:.4f})")
         self.f_sigma.setText(f"{s.diameter_degrees / 6:.3f}")
+        self.f_spacing.setText("6 / 6" if s.extent.startswith("24-2") else "4 / 6")
         self._preview()
         self.f_proc_summary.setText(
             f"{STRATEGY_NAMES[s.strategy]};  pilot mode {'ON' if s.pilot_mode else 'off'};  "
@@ -1726,7 +1738,7 @@ class SpecvisWindow(QMainWindow):
             f"Interval           {s.iti_ms[0]:.0f} + 0-{s.iti_ms[1] - s.iti_ms[0]:.0f} ms",
             f"Background         {self.f_bg_lum.text()} cd/m2"
             + (", dithered" if s.dithering else ""),
-            f"Stimuli            {s.extent} grid: {len(kept)} locations",
+            f"Stimuli            {EXTENT_NAMES.get(s.extent, s.extent)}: {len(kept)} tested",
             f"Fixation           {s.fixation_colour} +, check: {s.fixation_monitoring}",
             f"Keys               {s.answer_key} / {s.pause_key} / {s.cancel_key}",
             f"Procedure          {STRATEGY_NAMES[s.strategy]}, pilot mode "

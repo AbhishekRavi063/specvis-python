@@ -83,7 +83,17 @@ ABORT_KEY = "escape"
 GRID_X = (1, 5, 9, 13, 17, 21)
 GRID_Y = (1, 7, 13)
 FULL, CENTRAL, H24_2 = "full", "central", "24-2"
-EXTENTS = (H24_2, FULL, CENTRAL)
+#: The 24-2 without its top and bottom rows (+/-21 deg) and its 2 nasal 27-deg points:
+#: what fits a 24.5" screen at 50-53 cm, the Tobii Pro Fusion's range (50-80 cm).
+H24_2_CENTRAL = "24-2 central"
+EXTENTS = (H24_2, H24_2_CENTRAL, FULL, CENTRAL)
+#: What the grid choices are called in the app, so they can be compared at a glance.
+EXTENT_NAMES = {
+    H24_2: "24-2: 52 spots, 6 deg apart (needs ~33-37 cm; too close for the eye tracker)",
+    H24_2_CENTRAL: "24-2 without top/bottom rows: 42 spots, 6 deg apart (50-53 cm)",
+    FULL: "Aflah grid: 68 spots, 4 x 6 deg apart (50-60 cm)",
+    CENTRAL: "Aflah grid, central: 46 spots (+/-13 deg)",
+}
 #: The Humphrey 24-2 (the clinical standard; also used on flat screens, e.g. Melbourne
 #: Rapid Fields): points 6 deg apart, 3 deg off both midlines, out to 21 deg, plus two
 #: nasal points at 27 deg. 54 points; the 2 at 15 deg temporal, 3 deg above and below,
@@ -317,7 +327,7 @@ def seeds_for(settings: PerimetrySettings) -> Tuple[Tuple[float, float], ...]:
     own = tuple((float(x), float(y)) for x, y in settings.seed_points)
     if all(p in on_grid for p in own):
         return own
-    if settings.extent == H24_2:
+    if settings.extent in (H24_2, H24_2_CENTRAL):
         return tuple((float(x), float(y)) for x, y in H24_2_SEEDS)
     return own
 
@@ -352,11 +362,13 @@ def grid_points(settings: PerimetrySettings) -> Tuple[List[Tuple[int, int]],
     blind spot (temporal 12-18 deg, 3 below to 1 above), where every eye is blind;
     they are checked by the blind-spot catch trials instead.
     """
-    if settings.extent == H24_2:
+    if settings.extent in (H24_2, H24_2_CENTRAL):
+        central = settings.extent == H24_2_CENTRAL
         pts = [(sx * x, sy * y) for y, row in H24_2_ROWS.items() for x in row
-               for sx in (-1, 1) for sy in (-1, 1)]
-        nasal = -settings.temporal_sign * H24_2_NASAL
-        pts += [(nasal, 3), (nasal, -3)]
+               for sx in (-1, 1) for sy in (-1, 1) if not (central and y == 21)]
+        if not central:
+            nasal = -settings.temporal_sign * H24_2_NASAL
+            pts += [(nasal, 3), (nasal, -3)]
         pts.sort(key=lambda p: (math.hypot(*p), p))
         kept, dropped = [], []
         for x, y in pts:

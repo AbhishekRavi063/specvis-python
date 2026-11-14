@@ -13,7 +13,8 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from specvis.procedure.perimetry import (FULL, FULL_THRESHOLD, H24_2, SITA_FAST,  # noqa: E402
+from specvis.procedure.perimetry import (EXTENT_NAMES, EXTENTS, FULL, FULL_THRESHOLD,  # noqa: E402
+                                         H24_2, H24_2_CENTRAL, SITA_FAST,
                                          PerimetrySettings, categorise, contrast_range_db,
                                          default_calibration, fit_problem, grid_points,
                                          seeds_for, settings_from_dict, settings_to_dict,
@@ -255,5 +256,33 @@ with tempfile.TemporaryDirectory() as tmp:
     meta = json.loads((write_outputs(o, pathlib.Path(tmp) / "R") / "session.json").read_text())
     require(meta["grid"] == H24_2 and "middle_db" in meta["contrast_range"],
             "session.json records the grid and the dB range")
+
+print("8. the 24-2 without its top/bottom rows (for the eye tracker's 50-80 cm)")
+for eye, sign in (("R", 1), ("L", -1)):
+    kept, dropped = grid_points(PerimetrySettings(eye=eye, extent=H24_2_CENTRAL))
+    full, _ = grid_points(PerimetrySettings(eye=eye))
+    require(len(kept) == 42 and set(kept) <= set(full)
+            and max(abs(y) for _, y in kept) == 15 and max(abs(x) for x, _ in kept) == 21,
+            f"{eye} eye: 42 spots, all 24-2 positions, within +/-21 x +/-15 deg")
+    require(sorted(dropped) == sorted([(sign * 15, -3), (sign * 15, 3)]),
+            f"{eye} eye: the same 2 blind-spot points left out")
+require(set(seeds_for(PerimetrySettings(extent=H24_2_CENTRAL))) == {(-9.0, 9.0), (9.0, 9.0),
+                                                                     (-9.0, -9.0), (9.0, -9.0)},
+        "seeds at (+/-9, +/-9)")
+W245 = 542.0          # a 24.5" 16:9 screen
+require(fit_problem(PerimetrySettings(extent=H24_2_CENTRAL, screen_width_mm=W245,
+                                      viewing_distance_mm=520), 1920, 1080) is None
+        and fit_problem(PerimetrySettings(extent=H24_2_CENTRAL, screen_width_mm=W245,
+                                          viewing_distance_mm=560), 1920, 1080) is not None,
+        "fits a 24.5-inch screen at 52 cm, not at 56 cm")
+require(fit_problem(PerimetrySettings(extent=FULL, screen_width_mm=W245,
+                                      viewing_distance_mm=600), 1920, 1080) is None,
+        "the Aflah grid fits the same screen at 60 cm")
+require(all(e in EXTENT_NAMES for e in EXTENTS) and "42 spots" in EXTENT_NAMES[H24_2_CENTRAL]
+        and "68 spots" in EXTENT_NAMES[FULL], "the app names each grid with its number of spots")
+o, _ = run(right_hemianopia, 23, settings_overrides=dict(LAB, extent=H24_2_CENTRAL))
+cats = collections.Counter(categorise(o, p) for p in o.points)
+require(o.valid and len(o.points) == 42 and abs(cats["blind"] - 19) <= 1,
+        f"hemianopia on the 42-spot grid: {cats['blind']} blind of 19 in the right half")
 
 sys.exit(0 if ok else 1)

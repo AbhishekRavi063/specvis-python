@@ -96,12 +96,14 @@ sessions = store.list_sessions(perimetry_dir)
 everyone = [p.id for p in store.all_participants(people, sessions)]
 require(everyone == ["OLD01", "PILOT02"], f"old session's participant is listed: {everyone}")
 presets = store.list_presets(presets_dir)
-require(len(presets) == 3 and presets[0].settings["viewing_distance_mm"] == 350.0,
-        f"three shared presets: {[p.name for p in presets]}")
+require(len(presets) == 4 and presets[0].settings["viewing_distance_mm"] == 350.0,
+        f"four shared presets: {[p.name for p in presets]}")
 require(all(p.settings.get("strategy") == "full_threshold" for p in presets)
-        and [p.settings["extent"] for p in presets[1:]] == ["24-2", "24-2"]
-        and [p.settings["viewing_distance_mm"] for p in presets[1:]] == [330.0, 330.0],
-        "presets use the Full Threshold staircase; the lab ones the 24-2 at 33 cm")
+        and [(p.settings["extent"], p.settings["viewing_distance_mm"]) for p in presets[1:]]
+        == [("24-2", 330.0), ("24-2 central", 520.0), ("full", 550.0)]
+        and all(p.settings.get("fixation_monitoring") == "eye tracker" for p in presets[2:]),
+        "staircase presets: 24-2 at 33 cm (blind-spot check); the two eye-tracker grids at "
+        "52 and 55 cm, for comparing them")
 
 print("2. the window")
 win = MainWindow(perimetry_dir, participants_file, presets_dir, perimetry_dir / "prior_table.csv")
@@ -131,7 +133,7 @@ win.eye_box.setCurrentIndex(0)
 win.sf.setValue(2.0)
 require(win.settings.spatial_frequency_cpd == 2.0, "stimulus page reaches the settings")
 win.sf.setValue(4.0)
-win.extent_box.setCurrentText("central")
+win.extent_box.setCurrentIndex(win.extent_box.findData("central"))
 require(win.settings.extent == "central", "procedure page reaches the settings")
 win.sd_stop.setValue(0.20)
 require(abs(win.settings.zest.sd_stop - 0.20) < 1e-9, "the stopping rule reaches ZEST")

@@ -1,10 +1,10 @@
 {
-  "name": "Lab monitor - study (eye tracker)",
-  "description": "Controls and patients: 24-2 (52 points) at 33 cm with a chin rest, Full Threshold 4-2 staircase (OPI), seeds at the middle of the dB range, fixation by the Tobii eye tracker (start python/specvis.sh tracker-bridge first). Use the measured screen width and the ColorCAL luminance scale.",
+  "name": "Lab monitor - eye tracker, 24-2 without top/bottom rows",
+  "description": "Eye tracker (Tobii Pro Fusion, 50-80 cm): 24-2 positions without the +/-21 deg rows and the 2 nasal points, 42 spots, at 52 cm with a chin rest. Full Threshold 4-2 staircase (OPI). Start python/specvis.sh tracker-bridge first. Use the measured width and the ColorCAL scale. For comparing grids, run the \"Aflah grid\" eye-tracker preset on the same person.",
   "settings": {
     "screen_width_mm": 0.0,
-    "viewing_distance_mm": 330.0,
-    "extent": "24-2",
+    "viewing_distance_mm": 520.0,
+    "extent": "24-2 central",
     "pilot_mode": true,
     "strategy": "full_threshold",
     "background_cd_m2": 10.0,

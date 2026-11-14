@@ -1,0 +1,24 @@
+{
+  "name": "Lab monitor - eye tracker, Aflah grid",
+  "description": "Eye tracker (Tobii Pro Fusion, 50-80 cm): Aflah grid, 68 spots 4 x 6 deg apart, at 55 cm with a chin rest. Full Threshold 4-2 staircase (OPI). Start python/specvis.sh tracker-bridge first. For comparing grids, run the \"24-2 without top/bottom rows\" eye-tracker preset on the same person.",
+  "settings": {
+    "screen_width_mm": 0.0,
+    "viewing_distance_mm": 550.0,
+    "extent": "full",
+    "pilot_mode": true,
+    "strategy": "full_threshold",
+    "background_cd_m2": 10.0,
+    "dithering": true,
+    "fixation_ms": 0.0,
+    "iti_ms": [
+      300.0,
+      600.0
+    ],
+    "response_window_ms": 1200.0,
+    "adaptive_window": true,
+    "p_blank": 0.05,
+    "p_high": 0.05,
+    "p_blind_spot": 0.05,
+    "fixation_monitoring": "eye tracker"
+  }
+}
