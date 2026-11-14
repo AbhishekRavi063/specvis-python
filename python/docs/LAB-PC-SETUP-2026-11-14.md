@@ -109,6 +109,37 @@ run on the lab PC should confirm them.**
   is found, agreement with the clinical report, repeatability, and fixation losses.
 - **The team has not decided yet.**
 
+## Update 15 Nov: the grid for the eye tracker, and the working distances
+
+**The working distances**, recalculated with the monitor's own size (picture area
+544 × 303 mm, so half the height is 151.5 mm). Up/down is the tight direction, and 1° is
+added for half the 2° patch:
+
+| Grid | Needs up/down | Farthest distance (151.5 mm ÷ tan) | Tobii (50–80 cm)? |
+|---|---|---|---|
+| Full 24-2 (52 spots) | 22° | 37.5 cm | no |
+| **24-2 within ±15° (34 spots)** | 16° | **52.8 cm** | **yes: 50–52.8 cm** |
+| 24-2 without top/bottom rows (42 spots) | 16° | 52.8 cm | yes |
+| Aflah grid (68 spots) | 14° | 60.7 cm | yes |
+| 30-2 | 28° | 28.5 cm | no |
+
+**About the screen height:** the reported size (544 × 303) is slightly off 16:9. With square
+pixels, 544 mm wide gives 306 mm tall. The app uses the smaller height (303 mm) for the
+"does it fit" check, which is the safe side, and places the spots with square pixels.
+
+**New default grid, following Padmini's points** (equidistant, equal on all sides, test at
+about 50 cm):
+- the 24-2 positions within **±15° in every direction** (3°, 9°, 15° on both axes), 6° apart
+  everywhere;
+- 36 points, minus the 2 blind-spot points, so **34 tested**;
+- chin rest at **51 cm**, with the eye-distance check at **±1 cm**: the Tobii measures the
+  real distance;
+- precedent: Elliott et al. 2015 mapped the central 30° diameter (±15°) with the Octopus G2.
+
+Preset: **"Lab monitor – eye tracker, 24-2 within 15 deg (51 cm)"**.
+
+The Aflah grid and the 24-2 without its top/bottom rows stay available for comparison.
+
 ## Open items
 
 - [ ] Record the monitor brightness setting used for this calibration

@@ -25,7 +25,7 @@ sys.path.insert(0, str(HERE))
 
 from specvis.app import store  # noqa: E402
 from specvis.procedure.fixation import BRIDGE_PORT  # noqa: E402
-from specvis.procedure.perimetry import (EXTENT_NAMES, EXTENTS, H24_2_CENTRAL,  # noqa: E402
+from specvis.procedure.perimetry import (EXTENT_NAMES, EXTENTS, H24_2_15,  # noqa: E402
                                          PerimetrySettings, fit_problem)
 
 results = []
@@ -45,14 +45,14 @@ def screens():
         return []
 
 
-def distance_line(zs, set_mm: float) -> None:
+def distance_line(zs, set_mm: float, tol_mm: float = 10.0) -> None:
     """The eye's distance from the screen, as the tracker measures it."""
     if not zs:
         print("        eye distance: not measured (sit at the chin rest and look at the screen)")
         return
     zs = sorted(zs)
     d = zs[len(zs) // 2]
-    report(abs(d - set_mm) <= 20.0,
+    report(abs(d - set_mm) <= tol_mm,
            f"eye distance {d / 10:.1f} cm (set: {set_mm / 10:.0f} cm)",
            f"move the chin rest {'closer' if d > set_mm else 'further away'} by about "
            f"{abs(d - set_mm) / 10:.0f} cm")
@@ -63,9 +63,13 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--width-mm", type=float, required=True,
                     help="the stimulus screen's visible width, measured with a ruler")
-    ap.add_argument("--distance-mm", type=float, default=520.0, help="eye to screen")
-    ap.add_argument("--grid", choices=EXTENTS, default=H24_2_CENTRAL,
-                    help="the grid to check (default: the 24-2 without its top/bottom rows)")
+    ap.add_argument("--distance-mm", type=float, default=510.0, help="eye to screen")
+    ap.add_argument("--height-mm", type=float, default=303.0,
+                    help="screen height as measured / reported (0 = from the width)")
+    ap.add_argument("--grid", choices=EXTENTS, default=H24_2_15,
+                    help="the grid to check (default: the 24-2 within +/-15 deg)")
+    ap.add_argument("--tolerance-mm", type=float, default=10.0,
+                    help="eye distance allowed off the set distance (default 10 mm)")
     ap.add_argument("--screen", type=int, default=0)
     ap.add_argument("--no-photometer", action="store_true")
     ap.add_argument("--no-tracker", action="store_true")
@@ -79,6 +83,7 @@ def main() -> int:
     if args.screen < len(sc):
         w, h = sc[args.screen]
         s = PerimetrySettings(extent=args.grid, screen_width_mm=args.width_mm,
+                              screen_height_mm=args.height_mm,
                               viewing_distance_mm=args.distance_mm)
         problem = fit_problem(s, w, h)
         report(problem is None, f"{EXTENT_NAMES[args.grid].split(':')[0]} fits at "
@@ -141,7 +146,7 @@ def main() -> int:
             report(len(got) > 0, f"{t.model} ({t.serial_number}): {len(got) / 2:.0f} samples/s, "
                    f"{sum(got)} with a valid eye (look at the screen to see valid ones)",
                    "no gaze data: check the tracker in Eye Tracker Manager")
-            distance_line(zs, args.distance_mm)
+            distance_line(zs, args.distance_mm, args.tolerance_mm)
     else:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -163,7 +168,7 @@ def main() -> int:
             report(n > 0, f"gaze from the bridge: {n / 2:.0f} samples/s, {valid} valid "
                    f"({model or '?'})",
                    "start it in another terminal: python/specvis.sh tracker-bridge")
-            distance_line(zs, args.distance_mm)
+            distance_line(zs, args.distance_mm, args.tolerance_mm)
         except OSError as e:
             report(False, f"port {BRIDGE_PORT}", f"in use? close other ReFreM windows ({e})")
         finally:

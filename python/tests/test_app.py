@@ -96,11 +96,11 @@ sessions = store.list_sessions(perimetry_dir)
 everyone = [p.id for p in store.all_participants(people, sessions)]
 require(everyone == ["OLD01", "PILOT02"], f"old session's participant is listed: {everyone}")
 presets = store.list_presets(presets_dir)
-require(len(presets) == 4 and presets[0].settings["viewing_distance_mm"] == 350.0,
-        f"four shared presets: {[p.name for p in presets]}")
+require(len(presets) == 5 and presets[0].settings["viewing_distance_mm"] == 350.0,
+        f"five shared presets: {[p.name for p in presets]}")
 require(all(p.settings.get("strategy") == "full_threshold" for p in presets)
         and [(p.settings["extent"], p.settings["viewing_distance_mm"]) for p in presets[1:]]
-        == [("24-2", 330.0), ("24-2 central", 520.0), ("full", 550.0)]
+        == [("24-2", 330.0), ("24-2 central", 520.0), ("full", 550.0), ("24-2 within 15", 510.0)]
         and all(p.settings.get("fixation_monitoring") == "eye tracker" for p in presets[2:]),
         "staircase presets: 24-2 at 33 cm (blind-spot check); the two eye-tracker grids at "
         "52 and 55 cm, for comparing them")

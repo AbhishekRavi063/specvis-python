@@ -14,7 +14,7 @@ import tempfile
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from specvis.procedure.perimetry import (EXTENT_NAMES, EXTENTS, FULL, FULL_THRESHOLD,  # noqa: E402
-                                         H24_2, H24_2_CENTRAL, SITA_FAST,
+                                         H24_2, H24_2_15, H24_2_CENTRAL, SITA_FAST,
                                          PerimetrySettings, categorise, contrast_range_db,
                                          default_calibration, fit_problem, grid_points,
                                          seeds_for, settings_from_dict, settings_to_dict,
@@ -209,9 +209,10 @@ with tempfile.TemporaryDirectory() as tmp:
             "summary.csv names the method; no 'nan' for the missing ZEST SD")
 
 print("6. the Humphrey 24-2 grid (the default)")
-require(PerimetrySettings().extent == H24_2_CENTRAL and PerimetrySettings().screen_width_mm == 544
-        and PerimetrySettings().viewing_distance_mm == 520,
-        "defaults: the lab setup (BenQ 544 mm, 52 cm, 24-2 without top/bottom rows)")
+require(PerimetrySettings().extent == H24_2_15 and PerimetrySettings().screen_width_mm == 544
+        and PerimetrySettings().screen_height_mm == 303
+        and PerimetrySettings().viewing_distance_mm == 510,
+        "defaults: the lab setup (BenQ 544 x 303 mm, 51 cm, the 24-2 within 15 deg)")
 for eye, sign in (("R", 1), ("L", -1)):
     kept, dropped = grid_points(PerimetrySettings(eye=eye, extent=H24_2))
     require(len(kept) == 52 and sorted(dropped) == sorted([(sign * 15, -3), (sign * 15, 3)]),
@@ -289,5 +290,36 @@ o, _ = run(right_hemianopia, 23, settings_overrides=dict(LAB, extent=H24_2_CENTR
 cats = collections.Counter(categorise(o, p) for p in o.points)
 require(o.valid and len(o.points) == 42 and abs(cats["blind"] - 19) <= 1,
         f"hemianopia on the 42-spot grid: {cats['blind']} blind of 19 in the right half")
+
+print("9. the 24-2 within +/-15 deg: equidistant, equal on all sides (Padmini)")
+for eye, sign in (("R", 1), ("L", -1)):
+    kept, dropped = grid_points(PerimetrySettings(eye=eye, extent=H24_2_15))
+    full, _ = grid_points(PerimetrySettings(eye=eye, extent=H24_2))
+    xs = sorted({abs(x) for x, _ in kept}); ys = sorted({abs(y) for _, y in kept})
+    require(len(kept) == 34 and set(kept) <= set(full) and xs == ys == [3, 9, 15],
+            f"{eye} eye: 34 spots at 3, 9, 15 deg on both axes (24-2 positions)")
+    require(sorted(dropped) == sorted([(sign * 15, -3), (sign * 15, 3)]),
+            f"{eye} eye: the 2 blind-spot points left out")
+    neighbours = [min(math.hypot(a - c, b - d) for c, d in kept if (c, d) != (a, b))
+                  for a, b in kept]
+    require(set(neighbours) == {6.0}, "every spot's nearest neighbour is 6 deg away")
+BENQ = dict(extent=H24_2_15, screen_width_mm=544.0, screen_height_mm=303.0)
+require(fit_problem(PerimetrySettings(viewing_distance_mm=500, **BENQ), 1920, 1080) is None
+        and fit_problem(PerimetrySettings(viewing_distance_mm=528, **BENQ), 1920, 1080) is None
+        and fit_problem(PerimetrySettings(viewing_distance_mm=533, **BENQ), 1920, 1080) is not None,
+        "fits the BenQ from 50 to 52.8 cm (151.5 mm / tan 16 deg), not at 53.3 cm")
+require(fit_problem(PerimetrySettings(extent=H24_2, screen_width_mm=544.0, screen_height_mm=303.0,
+                                      viewing_distance_mm=375), 1920, 1080) is None
+        and fit_problem(PerimetrySettings(extent=H24_2, screen_width_mm=544.0,
+                                          screen_height_mm=303.0, viewing_distance_mm=380),
+                        1920, 1080) is not None,
+        "the full 24-2 needs 37.5 cm or closer on the BenQ")
+require(fit_problem(PerimetrySettings(viewing_distance_mm=530, screen_height_mm=0,
+                                      extent=H24_2_15, screen_width_mm=544.0), 1920, 1080) is None,
+        "height 0 = from the width and pixels (306 mm): 53.0 cm fits then")
+o, _ = run(right_hemianopia, 24, settings_overrides=dict(LAB, extent=H24_2_15))
+cats = collections.Counter(categorise(o, p) for p in o.points)
+require(o.valid and len(o.points) == 34 and abs(cats["blind"] - 16) <= 1,
+        f"hemianopia on the +/-15 deg grid: {cats['blind']} blind of 16 in the right half")
 
 sys.exit(0 if ok else 1)

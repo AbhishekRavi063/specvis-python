@@ -19,6 +19,7 @@
     "p_blank": 0.05,
     "p_high": 0.05,
     "p_blind_spot": 0.05,
-    "fixation_monitoring": "eye tracker"
+    "fixation_monitoring": "eye tracker",
+    "screen_height_mm": 303.0
   }
 }

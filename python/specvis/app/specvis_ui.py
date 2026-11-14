@@ -1219,10 +1219,12 @@ class SpecvisWindow(QMainWindow):
         self.f_res_x, self.f_res_y = _fixed(_readonly(), 210, 40), _fixed(_readonly(), 210, 40)
         v.addLayout(_row([_lab("Screen visual bounds (px)", 250, 40, 20), self.f_res_x, self.f_res_y]))
         self.f_width = _fixed(_spin(0.0, 3000.0, 544.0, 1.0, 1), 210, 40)
-        self.f_height = _fixed(_readonly(), 210, 40)
-        self.f_height.setToolTip("From the width and the screen's aspect ratio")
+        self.f_height = _fixed(_spin(0.0, 3000.0, 303.0, 1.0, 1), 210, 40)
+        self.f_height.setToolTip("The screen's height as measured / reported (BenQ: 303 mm). "
+                                 "Used for the fit check when smaller than width x aspect "
+                                 "ratio. 0 = from the width and the aspect ratio.")
         v.addLayout(_row([_lab("Screen size (mm)", 250, 40, 20), self.f_width, self.f_height]))
-        self.f_distance = _fixed(_spin(100.0, 2000.0, 520.0, 5.0, 0), 210, 40)
+        self.f_distance = _fixed(_spin(100.0, 2000.0, 510.0, 5.0, 0), 210, 40)
         check = _fixed(_button("Screen check", self.screen_check), 210, 40)
         check.setToolTip("Shows a box that must measure exactly 10 cm with a ruler")
         v.addLayout(_row([_lab("Patient distance (mm)", 250, 40, 20), self.f_distance, check]))
@@ -1234,7 +1236,7 @@ class SpecvisWindow(QMainWindow):
         self.f_fullscreen = QCheckBox()            # always full screen for data
         self.f_fullscreen.setChecked(True)
         self.f_fullscreen.setVisible(False)
-        for w in (self.f_width, self.f_distance):
+        for w in (self.f_width, self.f_height, self.f_distance):
             w.valueChanged.connect(self._read)
         v.addWidget(_separator())
         scale_buttons = lambda: [_fixed(_button(t, s), 100, 40) for t, s in (  # noqa: E731
@@ -1601,6 +1603,7 @@ class SpecvisWindow(QMainWindow):
         s = self.settings
         self.f_eye.setCurrentIndex(0 if s.eye == "R" else 1)
         self.f_width.setValue(s.screen_width_mm)
+        self.f_height.setValue(s.screen_height_mm)
         self.f_distance.setValue(s.viewing_distance_mm)
         self.f_size.setValue(s.diameter_degrees)
         self.f_sf.setValue(s.spatial_frequency_cpd)
@@ -1633,6 +1636,7 @@ class SpecvisWindow(QMainWindow):
         d.update(
             eye="R" if self.f_eye.currentIndex() == 0 else "L",
             screen_width_mm=self.f_width.value(), viewing_distance_mm=self.f_distance.value(),
+            screen_height_mm=self.f_height.value(),
             diameter_degrees=self.f_size.value(), spatial_frequency_cpd=self.f_sf.value(),
             orientation_degrees=self.f_ori.value(), stimulus_ms=self.f_time.value(),
             fixation_ms=self.f_fix_ms.value(), response_window_ms=self.f_window.value(),
@@ -1690,7 +1694,9 @@ class SpecvisWindow(QMainWindow):
         w, h = self.monitor_pixels()
         self.f_res_x.setText(str(w))
         self.f_res_y.setText(str(h))
-        self.f_height.setText(f"{s.screen_width_mm * h / w:.1f} mm" if w else "")
+        self.f_height.setToolTip(f"Measured / reported height. From the width and the aspect "
+                                 f"ratio it would be {s.screen_width_mm * h / w:.1f} mm; the "
+                                 "smaller is used for the fit check." if w else "")
         if s.screen_width_mm > 0 and w:
             hx, hy = field_half_degrees(s, w, h)
             self.f_field_x.setText(f"{2 * hx:.2f}")

@@ -93,9 +93,14 @@ FULL, CENTRAL, H24_2 = "full", "central", "24-2"
 #: The 24-2 without its top and bottom rows (+/-21 deg) and its 2 nasal 27-deg points:
 #: what fits a 24.5" screen at 50-53 cm, the Tobii Pro Fusion's range (50-80 cm).
 H24_2_CENTRAL = "24-2 central"
-EXTENTS = (H24_2, H24_2_CENTRAL, FULL, CENTRAL)
+#: The 24-2 positions within +/-15 deg in every direction (3, 9, 15 on both axes): 6 deg
+#: apart everywhere and equal on all sides (Padmini, 14 Nov). 36 points; the 2 blind-spot
+#: points left out -> 34 tested. Fits the 24.5" BenQ at 50-52.8 cm (the Tobii: 50-80 cm).
+H24_2_15 = "24-2 within 15"
+EXTENTS = (H24_2_15, H24_2, H24_2_CENTRAL, FULL, CENTRAL)
 #: What the grid choices are called in the app, so they can be compared at a glance.
 EXTENT_NAMES = {
+    H24_2_15: "24-2 within +/-15 deg: 34 spots, 6 deg apart, equal on all sides (50-52.8 cm)",
     H24_2: "24-2: 52 spots, 6 deg apart (needs ~33-37 cm; too close for the eye tracker)",
     H24_2_CENTRAL: "24-2 without top/bottom rows: 42 spots, 6 deg apart (50-53 cm)",
     FULL: "Aflah grid: 68 spots, 4 x 6 deg apart (50-60 cm)",
@@ -106,6 +111,7 @@ EXTENT_NAMES = {
 #: nasal points at 27 deg. 54 points; the 2 at 15 deg temporal, 3 deg above and below,
 #: lie in the blind spot and are left out, as in the Humphrey's analysis -> 52 tested.
 H24_2_ROWS = {3: (3, 9, 15, 21), 9: (3, 9, 15, 21), 15: (3, 9, 15), 21: (3, 9)}
+H24_2_15_ROWS = {3: (3, 9, 15), 9: (3, 9, 15), 15: (3, 9, 15)}
 H24_2_NASAL = 27
 H24_2_SEEDS = ((-9, 9), (9, 9), (-9, -9), (9, -9))   # the Humphrey's primary points
 
@@ -132,14 +138,18 @@ class PerimetrySettings:
     #: The lab setup (BenQ 24.5", Tobii Pro Fusion 50-80 cm): the 24-2 without its top/bottom
     #: rows at 52 cm. H24_2 = the full 24-2 (52 points, ~33-37 cm); FULL = Aflah's +/-21 x +/-13
     #: (68 points, 50-60 cm); CENTRAL = +/-13 x +/-13
-    extent: str = H24_2_CENTRAL
+    extent: str = H24_2_15
     pilot_mode: bool = True               # no starting guesses: clean data for the table
     strategy: str = FULL_THRESHOLD        # the team's choice (2026-11-13): no normal table
 
     # Screen, measured
     screen_width_mm: float = 544.0        # the lab BenQ 24.5": 544 x 303 mm picture area
-    viewing_distance_mm: float = 520.0    # in the eye tracker's 50-80 cm; the 24-2 without
-                                          # its top/bottom rows fits up to ~53 cm
+    viewing_distance_mm: float = 510.0    # in the eye tracker's 50-80 cm; the +/-15 deg grid
+                                          # fits up to 52.8 cm on the BenQ
+    #: The screen's height as measured or reported (BenQ: 303 mm). Used, when smaller than
+    #: width x pixel ratio, for the "does it fit" check (the safe side); spots are placed
+    #: with square pixels, as the panel's are. 0 = from the width and the pixels.
+    screen_height_mm: float = 303.0
 
     # Stimulus: the ReFreM SSVEP Gabor, shown static
     diameter_degrees: float = 2.0
@@ -230,7 +240,7 @@ class PerimetrySettings:
     #: asks to move the chin rest when it is further than this from the set viewing
     #: distance (our suggestion); every trial records the distance measured.
     check_eye_distance: bool = True
-    eye_distance_tolerance_mm: float = 20.0
+    eye_distance_tolerance_mm: float = 10.0
     answer_key: str = "space"
     pause_key: str = "p"
     cancel_key: str = "escape"
@@ -350,7 +360,7 @@ def seeds_for(settings: PerimetrySettings) -> Tuple[Tuple[float, float], ...]:
     own = tuple((float(x), float(y)) for x, y in settings.seed_points)
     if all(p in on_grid for p in own):
         return own
-    if settings.extent in (H24_2, H24_2_CENTRAL):
+    if settings.extent in (H24_2, H24_2_CENTRAL, H24_2_15):
         return tuple((float(x), float(y)) for x, y in H24_2_SEEDS)
     return own
 
@@ -385,9 +395,10 @@ def grid_points(settings: PerimetrySettings) -> Tuple[List[Tuple[int, int]],
     blind spot (temporal 12-18 deg, 3 below to 1 above), where every eye is blind;
     they are checked by the blind-spot catch trials instead.
     """
-    if settings.extent in (H24_2, H24_2_CENTRAL):
-        central = settings.extent == H24_2_CENTRAL
-        pts = [(sx * x, sy * y) for y, row in H24_2_ROWS.items() for x in row
+    if settings.extent in (H24_2, H24_2_CENTRAL, H24_2_15):
+        central = settings.extent != H24_2
+        rows = H24_2_15_ROWS if settings.extent == H24_2_15 else H24_2_ROWS
+        pts = [(sx * x, sy * y) for y, row in rows.items() for x in row
                for sx in (-1, 1) for sy in (-1, 1) if not (central and y == 21)]
         if not central:
             nasal = -settings.temporal_sign * H24_2_NASAL
@@ -546,10 +557,19 @@ def zest_settings_for(settings: PerimetrySettings, seed: bool) -> ZestSettings:
     return dataclasses.replace(settings.zest, fast_stop=True)
 
 
+def fit_height_mm(settings: PerimetrySettings, width_px: int, height_px: int) -> float:
+    """The screen height used to check that the grid fits: the measured / reported height
+    when it is the smaller (the safe side), else width x the pixels' aspect ratio."""
+    from_pixels = settings.screen_width_mm * height_px / width_px
+    if settings.screen_height_mm > 0:
+        return min(from_pixels, settings.screen_height_mm)
+    return from_pixels
+
+
 def field_half_degrees(settings: PerimetrySettings, width_px: int, height_px: int
                        ) -> Tuple[float, float]:
     """Half the field the screen covers, horizontally and vertically, in degrees."""
-    height_mm = settings.screen_width_mm * height_px / width_px
+    height_mm = fit_height_mm(settings, width_px, height_px)
     d = settings.viewing_distance_mm
     return (math.degrees(math.atan(settings.screen_width_mm / 2.0 / d)),
             math.degrees(math.atan(height_mm / 2.0 / d)))
@@ -566,7 +586,7 @@ def fit_problem(settings: PerimetrySettings, width_px: int, height_px: int) -> O
         return "the screen width, viewing distance and resolution must all be set"
     d = settings.viewing_distance_mm
     half_w_mm = settings.screen_width_mm / 2.0
-    half_h_mm = settings.screen_width_mm * height_px / width_px / 2.0
+    half_h_mm = fit_height_mm(settings, width_px, height_px) / 2.0
     radius_mm = d * math.radians(settings.diameter_degrees / 2.0)   # central scale
     kept, _ = grid_points(settings)
     hx, hy = field_half_degrees(settings, width_px, height_px)

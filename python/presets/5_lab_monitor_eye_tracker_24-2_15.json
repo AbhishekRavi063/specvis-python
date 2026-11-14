@@ -1,0 +1,26 @@
+{
+  "name": "Lab monitor - eye tracker, 24-2 within 15 deg (51 cm)",
+  "description": "Eye tracker (Tobii Pro Fusion, 50-80 cm): the 24-2 positions within +/-15 deg on all sides (3, 9, 15 deg; 6 deg apart), 34 spots tested, at 51 cm with a chin rest (fits up to 52.8 cm on the BenQ). Full Threshold 4-2 staircase (OPI). Start python/specvis.sh tracker-bridge first. Screen: BenQ 24.5\", 544 x 303 mm. Choose the ColorCAL scale \"Lab screen\". The app calibrates the tracker, checks accuracy and the eye distance (+/-1 cm) at the start.",
+  "settings": {
+    "screen_width_mm": 544.0,
+    "viewing_distance_mm": 510.0,
+    "extent": "24-2 within 15",
+    "pilot_mode": true,
+    "strategy": "full_threshold",
+    "background_cd_m2": 10.0,
+    "dithering": true,
+    "fixation_ms": 0.0,
+    "iti_ms": [
+      300.0,
+      600.0
+    ],
+    "response_window_ms": 1200.0,
+    "adaptive_window": true,
+    "p_blank": 0.05,
+    "p_high": 0.05,
+    "p_blind_spot": 0.05,
+    "fixation_monitoring": "eye tracker",
+    "screen_height_mm": 303.0,
+    "eye_distance_tolerance_mm": 10.0
+  }
+}
