@@ -6,5 +6,9 @@ numpy>=1.26,<3
 # Presentation layer (README.md, "The framework decision -- settled").
 # Pinned to the versions the port was developed and tested against.
 psychopy==2026.2.5
-PyQt6==6.11.0
+PyQt6==6.11.0; sys_platform != "win32"
+# Windows: Qt 6.11 fails to load on the lab PC ("DLL load failed ... procedure could not
+# be found", even with the latest Visual C++ runtime); 6.7 works there (2026-11-14).
+PyQt6==6.7.1; sys_platform == "win32"
+PyQt6-Qt6==6.7.3; sys_platform == "win32"
 psychopy-crs          # ColorCAL photometer (tools/calibrate_photometer.py)
