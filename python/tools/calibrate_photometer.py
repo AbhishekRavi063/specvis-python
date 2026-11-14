@@ -5,6 +5,14 @@ luminance scale the app uses (Step 2 -> Existing luminance scale).
     python/specvis.sh calibrate --name "Lab 24in, bg 10"            # the real thing
     python/specvis.sh calibrate --simulate --windowed --no-wait     # try without a meter
 
+Meter fixed at the screen centre (cannot be covered by hand)? Let the tool do it all:
+
+    python\specvis.bat calibrate --name "Lab screen" --port COM9 --auto-zero --no-wait
+
+--auto-zero switches the monitor off (Windows), zero-calibrates the ColorCAL in the dark,
+switches the monitor back on, waits --warmup-min minutes, and then measures. --no-wait
+starts and finishes without SPACE. Windows is kept from blanking the screen meanwhile.
+
 Before measuring:
   * screen: fixed brightness setting; dynamic contrast, eco / auto-brightness and
     overdrive OFF; warmed up 30 minutes; room dark, as in the test;
@@ -58,6 +66,9 @@ class SimulatedMeter:
         true = 0.3 + (300.0 - 0.3) * (self.level / 255.0) ** 2.2
         return true * (1.0 + random.gauss(0.0, 0.005))
 
+    def zero(self) -> bool:
+        return True
+
 
 CRS_USB_VENDOR = 0x0861        # Cambridge Research Systems (the ColorCAL's USB ID)
 
@@ -90,6 +101,60 @@ def _candidate_ports():
         return [p.device for p in list_ports.comports()] or [3]
     except ImportError:
         return [3]
+
+
+def _windows_monitors(on: bool) -> bool:
+    """Switch every monitor off (standby) or back on. Windows only; True if it was sent."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    user32 = ctypes.windll.user32
+    hwnd_broadcast, wm_syscommand, sc_monitorpower = 0xFFFF, 0x0112, 0xF170
+    # PostMessage, not SendMessage: a window that does not answer would freeze us.
+    user32.PostMessageW(hwnd_broadcast, wm_syscommand, sc_monitorpower, -1 if on else 2)
+    if on:                                      # a tiny mouse nudge wakes the screen for sure
+        user32.mouse_event(0x0001, 0, 1, 0, 0)
+        user32.mouse_event(0x0001, 0, -1, 0, 0)
+    return True
+
+
+def _keep_screen_awake(on: bool) -> None:
+    """Stop Windows blanking the screen or sleeping while we measure."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+    es_continuous, es_system, es_display = 0x80000000, 0x00000001, 0x00000002
+    ctypes.windll.kernel32.SetThreadExecutionState(
+        es_continuous | (es_system | es_display if on else 0))
+
+
+def auto_zero(meter, warmup_min: float, simulated: bool = False) -> None:
+    """Zero-calibrate the ColorCAL with the monitor switched off, then let it warm up."""
+    print("\nAUTOMATIC ZERO CALIBRATION")
+    if simulated:
+        print("  (simulated meter: monitor not switched, no waiting)")
+        meter.zero()
+        return
+    if _windows_monitors(False):
+        print("  monitor switched off; waiting 10 s in the dark...", flush=True)
+    else:
+        input("  Switch the monitor OFF with its power button (room dark), then press Enter... ")
+    time.sleep(10)
+    ok = meter.zero()
+    dark = meter.read()
+    print(f"  zero calibration: {'OK' if ok else 'FAILED'}; reading in the dark now "
+          f"{dark:.4f} cd/m2", flush=True)
+    if not _windows_monitors(True):
+        input("  Switch the monitor back ON, then press Enter... ")
+    _keep_screen_awake(True)
+    if not ok:
+        raise SystemExit("Zero calibration failed: is any light reaching the sensor?")
+    end = time.time() + warmup_min * 60
+    while time.time() < end:
+        left = (end - time.time()) / 60
+        print(f"  monitor warming up: {left:4.1f} min left", flush=True)
+        time.sleep(min(60, max(1, end - time.time())))
+    print("  warm-up done; measuring now\n", flush=True)
 
 
 class ColorCalMeter:
@@ -128,12 +193,13 @@ class ColorCalMeter:
         ok, serial, firmware, _ = self.cc.getInfo()
         self.serial = str(serial)
         print(f"ColorCAL connected: serial {serial}, firmware {firmware}")
-        if self.cc.getNeedsCalibrateZero():
-            input("The ColorCAL needs a zero calibration. Cover the sensor completely "
-                  "(cap on / face down on the desk), then press Enter... ")
-            if not self.cc.calibrateZero():
-                raise SystemExit("Zero calibration failed: was the sensor fully covered?")
-            input("Done. Put it back against the centre of the screen and press Enter... ")
+        self.needs_zero = bool(self.cc.getNeedsCalibrateZero())
+        if self.needs_zero:
+            print("The ColorCAL asks for a zero calibration: use --auto-zero.")
+
+    def zero(self) -> bool:
+        """Zero calibration: only valid when no light reaches the sensor."""
+        return bool(self.cc.calibrateZero())
 
     def read(self) -> float:
         ok, x, y, z = self.cc.measure()
@@ -161,9 +227,19 @@ def main() -> int:
     ap.add_argument("--no-wait", action="store_true", help="do not wait for SPACE (trying)")
     ap.add_argument("--no-save-scale", action="store_true",
                     help="save the readings but do not add a scale to the app")
+    ap.add_argument("--auto-zero", action="store_true",
+                    help="switch the monitor off, zero-calibrate the meter, switch it on, "
+                         "wait --warmup-min, then measure (meter fixed at the centre)")
+    ap.add_argument("--warmup-min", type=float, default=10.0,
+                    help="minutes to wait after the monitor comes back on (default 10)")
     args = ap.parse_args()
 
     meter = SimulatedMeter() if args.simulate else ColorCalMeter(args.port)
+    _keep_screen_awake(True)
+    if args.auto_zero:
+        auto_zero(meter, args.warmup_min, simulated=args.simulate)
+    elif getattr(meter, "needs_zero", False):
+        raise SystemExit("Run again with --auto-zero (the meter needs a zero calibration).")
 
     from psychopy import core, event, visual
     win = visual.Window(size=(1200, 800), screen=args.screen, fullscr=not args.windowed,
@@ -235,6 +311,7 @@ def main() -> int:
         say("Finished. You can remove the meter.\n\nSPACE to close.")
     finally:
         win.close()
+        _keep_screen_awake(False)
 
     levels, cds = [r[0] for r in rows], [r[1] for r in rows]
     table = photometry.table_from_readings(levels, cds)
@@ -265,7 +342,22 @@ def main() -> int:
         print(f"\nSaved luminance scale '{args.name}' -> choose it in the app, Step 2.")
 
     s = summary
+    dark = [(lv, m) for lv, m, _ in sorted(rows) if lv <= 60]
+    negative = [lv for lv, m in dark if m < 0]
+    zeros = [lv for lv, m in dark if m == 0]
+    warnings = []
+    if negative:
+        warnings.append(f"NEGATIVE readings at grey {negative}: the meter's zero is off. Run "
+                        "again with --auto-zero.")
+    if len(zeros) > 2:
+        warnings.append(f"readings of exactly 0 at grey {zeros}: below what the meter can "
+                        "read, or the monitor crushes its darks (check its Black level / "
+                        "Dark boost setting and 'Output dynamic range: Full').")
+    info["warnings"] = warnings
+    pathlib.Path(f"{stem}_summary.json").write_text(json.dumps(info, indent=2) + "\n")
     print("\n=== RESULT", "(SIMULATED - not a real screen)" if args.simulate else "", "===")
+    for w_ in warnings:
+        print("WARNING:", w_)
     print(f"black {s['black_cd_m2']:.3f} cd/m2, white {s['white_cd_m2']:.1f} cd/m2")
     print(f"background: grey {s['background_level']} = {s['background_cd_m2']:.3f} cd/m2")
     print(f"strongest patch at this background: {s['strongest_db'] + 0.0:.1f} dB")
