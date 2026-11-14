@@ -122,14 +122,17 @@ SEEN, WEAK, BLIND, NOT_FINISHED = "seen", "weak", "blind", "not_finished"
 class PerimetrySettings:
     participant_id: str = "pilot"
     eye: str = "R"                        # the eye tested; the other is covered
-    extent: str = H24_2                   # 24-2 (52 points); FULL = Aflah's +/-21 x +/-13
-                                          # (68); CENTRAL = +/-13 x +/-13
+    #: The lab setup (BenQ 24.5", Tobii Pro Fusion 50-80 cm): the 24-2 without its top/bottom
+    #: rows at 52 cm. H24_2 = the full 24-2 (52 points, ~33-37 cm); FULL = Aflah's +/-21 x +/-13
+    #: (68 points, 50-60 cm); CENTRAL = +/-13 x +/-13
+    extent: str = H24_2_CENTRAL
     pilot_mode: bool = True               # no starting guesses: clean data for the table
     strategy: str = FULL_THRESHOLD        # the team's choice (2026-11-13): no normal table
 
     # Screen, measured
-    screen_width_mm: float = 531.0        # a 24" 16:9 monitor (nominal): MEASURE it
-    viewing_distance_mm: float = 330.0    # the 24-2 needs about 33-37 cm on a 24" screen
+    screen_width_mm: float = 544.0        # the lab BenQ 24.5": 544 x 303 mm picture area
+    viewing_distance_mm: float = 520.0    # in the eye tracker's 50-80 cm; the 24-2 without
+                                          # its top/bottom rows fits up to ~53 cm
 
     # Stimulus: the ReFreM SSVEP Gabor, shown static
     diameter_degrees: float = 2.0

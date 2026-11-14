@@ -1001,7 +1001,7 @@ class SpecvisWindow(QMainWindow):
         self.scales = store.ScaleStore(scales_file)
         self.settings = PerimetrySettings()
         self.patient: Optional[store.Participant] = None
-        self.scale_id: Optional[str] = None
+        self.scale_id: Optional[str] = self._newest_measured_scale()
         self.settings_name = "(defaults)"
         self.process: Optional[QProcess] = None
         self.last_session: Optional[store.SessionInfo] = None
@@ -1204,11 +1204,11 @@ class SpecvisWindow(QMainWindow):
                           _fixed(_button("Refresh", self._fill_screens), 100, 40)]))
         self.f_res_x, self.f_res_y = _fixed(_readonly(), 210, 40), _fixed(_readonly(), 210, 40)
         v.addLayout(_row([_lab("Screen visual bounds (px)", 250, 40, 20), self.f_res_x, self.f_res_y]))
-        self.f_width = _fixed(_spin(0.0, 3000.0, 302.0, 1.0, 1), 210, 40)
+        self.f_width = _fixed(_spin(0.0, 3000.0, 544.0, 1.0, 1), 210, 40)
         self.f_height = _fixed(_readonly(), 210, 40)
         self.f_height.setToolTip("From the width and the screen's aspect ratio")
         v.addLayout(_row([_lab("Screen size (mm)", 250, 40, 20), self.f_width, self.f_height]))
-        self.f_distance = _fixed(_spin(100.0, 2000.0, 350.0, 5.0, 0), 210, 40)
+        self.f_distance = _fixed(_spin(100.0, 2000.0, 520.0, 5.0, 0), 210, 40)
         check = _fixed(_button("Screen check", self.screen_check), 210, 40)
         check.setToolTip("Shows a box that must measure exactly 10 cm with a ruler")
         v.addLayout(_row([_lab("Patient distance (mm)", 250, 40, 20), self.f_distance, check]))
@@ -1253,6 +1253,12 @@ class SpecvisWindow(QMainWindow):
         i = max(0, min(self.f_screen.currentIndex(), len(screens) - 1))
         g, r = screens[i].geometry(), screens[i].devicePixelRatio()
         return int(g.width() * r), int(g.height() * r)
+
+    def _newest_measured_scale(self) -> Optional[str]:
+        """The newest ColorCAL-measured scale (python/specvis.sh calibrate), if any: used
+        when no scale has been chosen, so a calibrated screen is never run as 'assumed'."""
+        measured = [s for s in self.scales.all() if len(s.table) == 101]
+        return max(measured, key=lambda s: s.created).id if measured else None
 
     def current_scale(self) -> Optional[store.LuminanceScale]:
         return self.scales.get(self.scale_id) if self.scale_id else None
@@ -1965,6 +1971,8 @@ class SpecvisWindow(QMainWindow):
         except (TypeError, ValueError):
             pass
         self.scale_id = last.get("scale") if self.scales.get(last.get("scale") or "") else None
+        if self.scale_id is None:
+            self.scale_id = self._newest_measured_scale()
         self.settings_name = last.get("settings_name", "(last used)")
         self.f_settings.setText(self.settings_name)
         if 0 <= last.get("screen", 0) < self.f_screen.count():

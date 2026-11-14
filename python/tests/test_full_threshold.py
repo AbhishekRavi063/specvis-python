@@ -209,23 +209,28 @@ with tempfile.TemporaryDirectory() as tmp:
             "summary.csv names the method; no 'nan' for the missing ZEST SD")
 
 print("6. the Humphrey 24-2 grid (the default)")
-require(PerimetrySettings().extent == H24_2, "the 24-2 is the default grid")
+require(PerimetrySettings().extent == H24_2_CENTRAL and PerimetrySettings().screen_width_mm == 544
+        and PerimetrySettings().viewing_distance_mm == 520,
+        "defaults: the lab setup (BenQ 544 mm, 52 cm, 24-2 without top/bottom rows)")
 for eye, sign in (("R", 1), ("L", -1)):
-    kept, dropped = grid_points(PerimetrySettings(eye=eye))
+    kept, dropped = grid_points(PerimetrySettings(eye=eye, extent=H24_2))
     require(len(kept) == 52 and sorted(dropped) == sorted([(sign * 15, -3), (sign * 15, 3)]),
             f"{eye} eye: 54 points, the 2 blind-spot points (15 deg temporal, +/-3) left out")
     require(sorted(p for p in kept if abs(p[0]) == 27) == [(-sign * 27, -3), (-sign * 27, 3)],
             f"{eye} eye: the 2 extra points at 27 deg are on the nasal side")
     require({abs(v) for p in kept for v in p} <= {3, 9, 15, 21, 27},
             f"{eye} eye: points at 3, 9, 15, 21 deg (and 27 nasal) only")
-require(set(seeds_for(PerimetrySettings())) == {(-9.0, 9.0), (9.0, 9.0), (-9.0, -9.0), (9.0, -9.0)},
+require(set(seeds_for(PerimetrySettings(extent=H24_2))) == {(-9.0, 9.0), (9.0, 9.0), (-9.0, -9.0),
+                                                              (9.0, -9.0)},
         "seeds at the Humphrey's primary points (+/-9, +/-9)")
 require(set(seeds_for(PerimetrySettings(extent=FULL))) == {(-9.0, 7.0), (9.0, 7.0), (-9.0, -7.0),
                                                            (9.0, -7.0)},
         "the old grid keeps its own seeds")
-require(fit_problem(PerimetrySettings(screen_width_mm=531, viewing_distance_mm=330), 1920, 1080)
+require(fit_problem(PerimetrySettings(extent=H24_2, screen_width_mm=531, viewing_distance_mm=330),
+                   1920, 1080)
         is None, "fits a 24-inch 16:9 screen at 33 cm")
-require(fit_problem(PerimetrySettings(screen_width_mm=531, viewing_distance_mm=400), 1920, 1080)
+require(fit_problem(PerimetrySettings(extent=H24_2, screen_width_mm=531, viewing_distance_mm=400),
+                   1920, 1080)
         is not None, "refused on a 24-inch screen at 40 cm (too far for 21 deg up/down)")
 
 print("7. the seeds start at the middle of the measurable dB range")
@@ -260,7 +265,7 @@ with tempfile.TemporaryDirectory() as tmp:
 print("8. the 24-2 without its top/bottom rows (for the eye tracker's 50-80 cm)")
 for eye, sign in (("R", 1), ("L", -1)):
     kept, dropped = grid_points(PerimetrySettings(eye=eye, extent=H24_2_CENTRAL))
-    full, _ = grid_points(PerimetrySettings(eye=eye))
+    full, _ = grid_points(PerimetrySettings(eye=eye, extent=H24_2))
     require(len(kept) == 42 and set(kept) <= set(full)
             and max(abs(y) for _, y in kept) == 15 and max(abs(x) for x, _ in kept) == 21,
             f"{eye} eye: 42 spots, all 24-2 positions, within +/-21 x +/-15 deg")
