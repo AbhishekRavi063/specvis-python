@@ -158,6 +158,35 @@ def auto_zero(meter, warmup_min: float, simulated: bool = False) -> None:
     print("  warm-up done; measuring now\n", flush=True)
 
 
+def fast_measure(com, calib_matrix, timeout_s: float = 10.0) -> float:
+    """One ColorCAL MES reading over an open serial port, returning Y (cd/m^2).
+
+    The ColorCAL answers 'OK00,<x>,<y>,<z>' and then a '>' prompt; the raw values are
+    turned into CIE XYZ with the device's calibration matrix, as psychopy-crs does.
+    """
+    import re
+    import numpy as np
+    try:
+        com.reset_input_buffer()
+    except AttributeError:
+        com.flushInput()
+    com.write(b"MES\n")
+    com.flush()
+    com.timeout = 0.05
+    buf, text = b"", ""
+    end = time.time() + timeout_s
+    while time.time() < end:
+        buf += com.read(256)
+        text = buf.decode("utf-8", "ignore")
+        if ("OK00" in text or "ER" in text) and text.rstrip("\r\n ").endswith(">"):
+            break
+    line = next((s for s in re.split(r"[\r\n>]+", text) if s.startswith("OK00")), None)
+    if line is None:
+        raise RuntimeError(f"reply not understood: {text!r}")
+    raw = np.array([v.strip() for v in line.split(",")[1:4]], dtype=float)
+    return float(np.dot(np.asarray(calib_matrix, dtype=float), raw)[1])
+
+
 class ColorCalMeter:
     """The ColorCAL through PsychoPy's official CRS plugin (psychopy-crs)."""
 
@@ -203,6 +232,28 @@ class ColorCalMeter:
         return bool(self.cc.calibrateZero())
 
     def read(self) -> float:
+        """Luminance (cd/m^2). Sends MES and reads the reply directly: psychopy-crs 0.0.2's
+        measure() waits out several 5 s timeouts around the '>' prompt (22 s a reading on
+        the lab PC, against 2.6 s for the reply itself)."""
+        if getattr(self, "_slow", False):
+            return self._driver_read()
+        try:
+            y = fast_measure(self.cc.com, self.cc.calibMatrix)
+        except Exception as e:                          # noqa: BLE001 -- fall back once
+            print(f"  fast reading failed ({e}); using the driver's slower measure()")
+            self._slow = True
+            return self._driver_read()
+        if not getattr(self, "_checked", False):        # once: does it agree with the driver?
+            self._checked = True
+            ref = self._driver_read()
+            print(f"  check: fast reading {y:.4f} vs driver {ref:.4f} cd/m2", flush=True)
+            if abs(y - ref) > max(0.02, 0.05 * abs(ref)):
+                print("  they differ: using the driver's slower measure() from now on")
+                self._slow = True
+                return ref
+        return y
+
+    def _driver_read(self) -> float:
         ok, x, y, z = self.cc.measure()
         if not ok:
             raise RuntimeError("the ColorCAL did not return a reading")
@@ -285,7 +336,7 @@ def main() -> int:
         def read_all():
             try:
                 out["vals"] = [meter.read() for _ in range(args.repeats)]
-            except Exception as e:                     # noqa: BLE001 -- reported below
+            except BaseException as e:                 # noqa: BLE001 -- raised below
                 out["error"] = e
 
         worker = threading.Thread(target=read_all, daemon=True)
@@ -297,6 +348,9 @@ def main() -> int:
         return statistics.mean(vals), (statistics.stdev(vals) if len(vals) > 1 else 0.0)
 
     rows = []
+    places = {}
+    bg_level = None
+    stopped = False
     try:
         say("ColorCAL against the CENTRE of the screen, room dark.\n\n"
             "The screen will turn different greys for a few minutes.\n"
@@ -322,7 +376,6 @@ def main() -> int:
         bg_level = photometry.background_level([r[0] for r in rows], [r[1] for r in rows],
                                                args.background_cd)
 
-        places = {}
         if args.uniformity:
             for place in PLACES:
                 say(f"Move the ColorCAL to the {place.upper()} of the screen\n"
@@ -330,24 +383,46 @@ def main() -> int:
                 m, _ = measure(bg_level)
                 places[place] = m
                 print(f"  background at {place:12s}: {m:.4f} cd/m2", flush=True)
-        say("Finished. You can remove the meter.\n\nSPACE to close.")
-    finally:
-        win.close()
-        _keep_screen_awake(False)
+    except SystemExit:
+        stopped = True
+    _keep_screen_awake(False)
 
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    stem = OUT_DIR / time.strftime("%Y%m%d_%H%M%S")
+
+    def write_readings(suffix: str = "") -> None:
+        with open(f"{stem}_readings{suffix}.csv", "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["grey_level", "brightness_pct", "cd_m2", "sd", "repeats"])
+            for lv, m, sd in sorted(rows):
+                w.writerow([lv, round(lv / 255 * 100, 3), round(m, 5), round(sd, 5),
+                            args.repeats])
+
+    if stopped:
+        # Stopped part-way: keep what was measured (no luminance scale: it needs the whole
+        # curve), then close the window.
+        if rows:
+            write_readings("_PARTIAL")
+            print(f"\nStopped. The {len(rows)} readings taken are saved in "
+                  f"{stem}_readings_PARTIAL.csv (no luminance scale was made).")
+        _close(win)
+        return 1
+
+    # Everything is saved BEFORE the window is closed: on the lab PC closing the window
+    # once took an hour, with the results still unsaved.
+    try:                                # a message only; do not wait for a key
+        text.text = "Finished. Saving the results...\nYou can remove the meter."
+        text.draw()
+        win.flip()
+    except Exception:                   # noqa: BLE001 -- the window may already be gone
+        pass
     levels, cds = [r[0] for r in rows], [r[1] for r in rows]
     table = photometry.table_from_readings(levels, cds)
     summary = photometry.summarise(levels, cds, bg_level)
     if places:
         summary.update(photometry.uniformity(places))
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    stem = OUT_DIR / time.strftime("%Y%m%d_%H%M%S")
-    with open(f"{stem}_readings.csv", "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["grey_level", "brightness_pct", "cd_m2", "sd", "repeats"])
-        for lv, m, sd in sorted(rows):
-            w.writerow([lv, round(lv / 255 * 100, 3), round(m, 5), round(sd, 5), args.repeats])
+    write_readings()
     info = dict(name=args.name, meter=("SIMULATED" if args.simulate else "ColorCAL"),
                 serial=meter.serial, screen=args.screen, settle_s=args.settle,
                 background_target_cd_m2=args.background_cd, summary=summary,
@@ -390,8 +465,19 @@ def main() -> int:
     if places:
         print(f"background uniformity: largest difference from the centre "
               f"{s['max_difference_pct']:.1f} %")
-    print(f"readings saved: {stem}_readings.csv / _summary.json")
+    print(f"readings saved: {stem}_readings.csv / _summary.json", flush=True)
+    _close(win)
     return 0
+
+
+def _close(win) -> None:
+    """Close the stimulus window. Results are already saved; if closing hangs, the window
+    (or the PowerShell / Command Prompt window) can simply be closed."""
+    print("closing the measurement window...", flush=True)
+    try:
+        win.close()
+    except Exception:                                   # noqa: BLE001 -- nothing left to lose
+        pass
 
 
 if __name__ == "__main__":
