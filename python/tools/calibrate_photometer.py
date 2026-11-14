@@ -59,9 +59,28 @@ class SimulatedMeter:
         return true * (1.0 + random.gauss(0.0, 0.005))
 
 
+CRS_USB_VENDOR = 0x0861        # Cambridge Research Systems (the ColorCAL's USB ID)
+
+
 def _candidate_ports():
-    """Serial ports a ColorCAL may be on (it shows up as a USB modem / COM port)."""
+    """Serial ports a ColorCAL may be on (it shows up as a USB modem / COM port).
+
+    The ColorCAL is found by its USB vendor ID. Other ports are never opened: on the lab
+    PC, Bluetooth serial ports and Intel AMT (SOL) froze the program when opened.
+    """
     import glob
+    try:
+        from serial.tools import list_ports
+        ports = list(list_ports.comports())
+        crs = [p.device for p in ports if p.vid == CRS_USB_VENDOR]
+        if crs:
+            return crs
+        usb = [p.device for p in ports
+               if p.vid is not None and "bluetooth" not in (p.description or "").lower()]
+        if usb or ports:
+            return usb
+    except ImportError:
+        pass
     if sys.platform == "darwin":
         return sorted(glob.glob("/dev/cu.usbmodem*")) or ["/dev/cu.usbmodem0001"]
     if sys.platform.startswith("linux"):
