@@ -38,6 +38,7 @@ import pathlib
 import random
 import statistics
 import sys
+import threading
 import time
 
 HERE = pathlib.Path(__file__).resolve().parents[1]
@@ -265,13 +266,34 @@ def main() -> int:
         if isinstance(meter, SimulatedMeter):
             meter.set_level(level)
 
+    def keep_alive(until=None, worker=None) -> None:
+        """Redraw the grey window while waiting, so Windows never marks it 'Not responding'
+        (it does after ~5 s without a redraw, and may then show other windows in front --
+        which is what happened on the lab PC while the meter read dark greys)."""
+        while (worker is not None and worker.is_alive()) or (until is not None
+                                                             and time.time() < until):
+            win.flip()
+            if "escape" in event.getKeys(["escape"]):
+                win.close()
+                raise SystemExit("stopped")
+
     def measure(level: int):
         grey(level)
-        core.wait(args.settle)
-        vals = [meter.read() for _ in range(args.repeats)]
-        if "escape" in event.getKeys(["escape"]):
-            win.close()
-            raise SystemExit("stopped")
+        keep_alive(until=time.time() + args.settle)
+        out = {}
+
+        def read_all():
+            try:
+                out["vals"] = [meter.read() for _ in range(args.repeats)]
+            except Exception as e:                     # noqa: BLE001 -- reported below
+                out["error"] = e
+
+        worker = threading.Thread(target=read_all, daemon=True)
+        worker.start()
+        keep_alive(worker=worker)
+        if "error" in out:
+            raise out["error"]
+        vals = out["vals"]
         return statistics.mean(vals), (statistics.stdev(vals) if len(vals) > 1 else 0.0)
 
     rows = []
