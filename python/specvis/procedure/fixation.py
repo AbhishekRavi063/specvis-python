@@ -33,7 +33,7 @@ import time
 from typing import Callable, List, Optional, Sequence, Tuple
 
 Gaze = Optional[Tuple[float, float]]           # field degrees from the +, or None
-Sample = Tuple[float, Gaze]                    # (time.monotonic(), gaze)
+Sample = Tuple[float, Gaze]                    # (time.perf_counter(), gaze)
 
 FIX_BLIND_SPOT, FIX_NONE, FIX_TRACKER, FIX_MOUSE = "blind spot", "none", "eye tracker", "mouse"
 FIXATION_MODES = (FIX_BLIND_SPOT, FIX_NONE, FIX_TRACKER, FIX_MOUSE)
@@ -66,7 +66,7 @@ class FixationMonitor:
     def current(self) -> Gaze:
         """Gaze now. Also kept as a sample, so polled monitors build a record too."""
         g = self._read()
-        self._add(time.monotonic(), g)
+        self._add(time.perf_counter(), g)
         return g
 
     def _add(self, t: float, g: Gaze) -> None:
@@ -78,7 +78,7 @@ class FixationMonitor:
             return [g for t, g in self.samples if t0 <= t <= t1]
 
     def patch_shown(self, t0: float, t1: float) -> None:
-        """Called after every patch with its start and end (time.monotonic())."""
+        """Called after every patch with its start and end (time.perf_counter())."""
 
     def describe(self) -> str:
         return "no eye tracking"
@@ -143,7 +143,7 @@ class TobiiMonitor(FixationMonitor):
     """A Tobii Pro screen-based eye tracker (Pro Fusion) via the Tobii Pro SDK.
 
     Gaze arrives on the SDK's own thread (120 or 250 samples a second) and is stamped
-    with ``time.monotonic()`` on arrival, so it lines up with the procedure's clock to
+    with ``time.perf_counter()`` on arrival, so it lines up with the procedure's clock to
     within the SDK's latency (a few ms). Only the tested eye is used: the other eye is
     patched, and its samples are invalid anyway.
 
@@ -188,7 +188,7 @@ class TobiiMonitor(FixationMonitor):
             fx, fy = data[f"{side}_gaze_point_on_display_area"]
             if not (math.isnan(fx) or math.isnan(fy)):
                 g = self._to_deg(fx * self._size[0], fy * self._size[1])
-        self._add(time.monotonic(), g)
+        self._add(time.perf_counter(), g)
 
     def current(self) -> Gaze:
         """The latest sample, if it is fresh (under 50 ms old)."""
@@ -196,7 +196,7 @@ class TobiiMonitor(FixationMonitor):
             if not self.samples:
                 return None
             t, g = self.samples[-1]
-        return g if time.monotonic() - t < 0.05 else None
+        return g if time.perf_counter() - t < 0.05 else None
 
     # -- the Python 3.10 bridge ----------------------------------------------------------
 
@@ -211,8 +211,8 @@ class TobiiMonitor(FixationMonitor):
             raise RuntimeError(f"Port {port} is in use: is another ReFreM test running?") from e
         self._sock.settimeout(0.2)
         first = None
-        deadline = time.monotonic() + wait_s
-        while first is None and time.monotonic() < deadline:
+        deadline = time.perf_counter() + wait_s
+        while first is None and time.perf_counter() < deadline:
             try:
                 first = self._sock.recv(4096)
             except socket.timeout:

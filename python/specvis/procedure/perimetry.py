@@ -682,7 +682,7 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
     reaction_times: List[float] = []
     rows: List[dict] = []
     started = time.strftime("%Y-%m-%d %H:%M:%S")
-    t0 = time.monotonic()
+    t0 = time.perf_counter()
     aborted = False
 
     def wait(ms: float) -> None:
@@ -778,12 +778,12 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         if watching:
             wait_for_fixation()
         counts["presentations"] += 1
-        t_on = time.monotonic()
+        t_on = time.perf_counter()
         monitor.current()
         report = backend.present_train([tex], 0, stim_frames, fixation=fixation,
                                        response_keys=[seen_key, abort_key])
         monitor.current()
-        t_off = time.monotonic()
+        t_off = time.perf_counter()
         monitor.patch_shown(t_on, t_off)
         counts["dropped_frames"] += report.dropped_frames
         if any(k == abort_key for k, _ in report.keys):
@@ -821,7 +821,7 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         measure = nominal_contrast if settings.dithering else measure_contrast
         rendered = (measure(base.with_contrast(contrast), calibration, ppd_x, ppd_y)
                     if contrast > 0 else 0.0)
-        row = dict(trial=len(rows) + 1, ms_from_start=int((time.monotonic() - t0) * 1000),
+        row = dict(trial=len(rows) + 1, ms_from_start=int((time.perf_counter() - t0) * 1000),
                    kind=kind, point=point.index if point else "",
                    x_deg="" if x is None else x, y_deg="" if y is None else y,
                    requested_contrast=round(contrast, 5), rendered_contrast=round(rendered, 5),
@@ -1151,7 +1151,7 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         calibration_source=calibration.source, calibrated=calibration.calibrated,
         prior_table_source=(use_table.source if use_table is not None else
                             ("not used (pilot mode)" if settings.pilot_mode else "none")),
-        aborted=aborted, started=started, duration_s=time.monotonic() - t0,
+        aborted=aborted, started=started, duration_s=time.perf_counter() - t0,
         point_px={p.index: to_px(p.x_deg, p.y_deg) for p in points},
         patch_radius_px=radius_px, background_cd_m2=mean_luminance, post_processing=post,
         fixation_monitor=(monitor.describe() if watching else settings.fixation_monitoring),
