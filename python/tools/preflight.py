@@ -4,7 +4,7 @@
     python/specvis.sh preflight --width-mm 531 --distance-mm 330
 
 Checks, without showing any stimulus:
-  1. the screens PsychoPy sees, and whether the 24-2 fits at this width and distance;
+  1. the screens PsychoPy sees, and whether the grid fits at this width and distance;
   2. the ColorCAL answers (skip with --no-photometer);
   3. a measured luminance scale exists (from python/specvis.sh calibrate);
   4. gaze arrives from the eye-tracker bridge (skip with --no-tracker).
@@ -25,7 +25,8 @@ sys.path.insert(0, str(HERE))
 
 from specvis.app import store  # noqa: E402
 from specvis.procedure.fixation import BRIDGE_PORT  # noqa: E402
-from specvis.procedure.perimetry import H24_2, PerimetrySettings, fit_problem  # noqa: E402
+from specvis.procedure.perimetry import (EXTENT_NAMES, EXTENTS, H24_2_CENTRAL,  # noqa: E402
+                                         PerimetrySettings, fit_problem)
 
 results = []
 
@@ -44,12 +45,27 @@ def screens():
         return []
 
 
+def distance_line(zs, set_mm: float) -> None:
+    """The eye's distance from the screen, as the tracker measures it."""
+    if not zs:
+        print("        eye distance: not measured (sit at the chin rest and look at the screen)")
+        return
+    zs = sorted(zs)
+    d = zs[len(zs) // 2]
+    report(abs(d - set_mm) <= 20.0,
+           f"eye distance {d / 10:.1f} cm (set: {set_mm / 10:.0f} cm)",
+           f"move the chin rest {'closer' if d > set_mm else 'further away'} by about "
+           f"{abs(d - set_mm) / 10:.0f} cm")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--width-mm", type=float, required=True,
                     help="the stimulus screen's visible width, measured with a ruler")
-    ap.add_argument("--distance-mm", type=float, default=330.0, help="eye to screen")
+    ap.add_argument("--distance-mm", type=float, default=520.0, help="eye to screen")
+    ap.add_argument("--grid", choices=EXTENTS, default=H24_2_CENTRAL,
+                    help="the grid to check (default: the 24-2 without its top/bottom rows)")
     ap.add_argument("--screen", type=int, default=0)
     ap.add_argument("--no-photometer", action="store_true")
     ap.add_argument("--no-tracker", action="store_true")
@@ -62,10 +78,11 @@ def main() -> int:
             print(f"        screen {i}: {w} x {h}" + ("   <- stimulus" if i == args.screen else ""))
     if args.screen < len(sc):
         w, h = sc[args.screen]
-        s = PerimetrySettings(extent=H24_2, screen_width_mm=args.width_mm,
+        s = PerimetrySettings(extent=args.grid, screen_width_mm=args.width_mm,
                               viewing_distance_mm=args.distance_mm)
         problem = fit_problem(s, w, h)
-        report(problem is None, f"the 24-2 fits at {args.distance_mm:.0f} mm on a "
+        report(problem is None, f"{EXTENT_NAMES[args.grid].split(':')[0]} fits at "
+               f"{args.distance_mm:.0f} mm on a "
                f"{args.width_mm:.0f} mm wide screen", problem or "")
     else:
         report(False, f"screen {args.screen} not found", "check the cable / --screen")
@@ -109,21 +126,28 @@ def main() -> int:
                    "close Tobii Pro Lab")
         else:
             t = trackers[0]
-            got = []
-            cb = lambda d: got.append(bool(d.get("right_gaze_point_validity")  # noqa: E731
-                                           or d.get("left_gaze_point_validity")))
+            got, zs = [], []
+
+            def cb(d):
+                got.append(bool(d.get("right_gaze_point_validity")
+                                or d.get("left_gaze_point_validity")))
+                for s in ("right", "left"):
+                    if d.get(f"{s}_gaze_origin_validity"):
+                        zs.append(float(d[f"{s}_gaze_origin_in_user_coordinate_system"][2]))
+                        break
             t.subscribe_to(tr.EYETRACKER_GAZE_DATA, cb, as_dictionary=True)
             time.sleep(2.0)
             t.unsubscribe_from(tr.EYETRACKER_GAZE_DATA, cb)
             report(len(got) > 0, f"{t.model} ({t.serial_number}): {len(got) / 2:.0f} samples/s, "
                    f"{sum(got)} with a valid eye (look at the screen to see valid ones)",
                    "no gaze data: check the tracker in Eye Tracker Manager")
+            distance_line(zs, args.distance_mm)
     else:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             sock.bind(("127.0.0.1", BRIDGE_PORT))
             sock.settimeout(0.2)
-            n, valid, model = 0, 0, ""
+            n, valid, model, zs = 0, 0, "", []
             end = time.monotonic() + 2.0
             while time.monotonic() < end:
                 try:
@@ -133,9 +157,13 @@ def main() -> int:
                 n += 1
                 valid += bool((msg.get("r") or [0, 0, 0])[2] or (msg.get("l") or [0, 0, 0])[2])
                 model = msg.get("model", model)
+                z = msg.get("rz") if msg.get("rz") is not None else msg.get("lz")
+                if z is not None:
+                    zs.append(float(z))
             report(n > 0, f"gaze from the bridge: {n / 2:.0f} samples/s, {valid} valid "
                    f"({model or '?'})",
                    "start it in another terminal: python/specvis.sh tracker-bridge")
+            distance_line(zs, args.distance_mm)
         except OSError as e:
             report(False, f"port {BRIDGE_PORT}", f"in use? close other ReFreM windows ({e})")
         finally:

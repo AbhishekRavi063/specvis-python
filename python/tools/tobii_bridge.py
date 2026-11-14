@@ -17,8 +17,9 @@ The app can also run the Tobii calibration through the bridge: it sends JSON com
 fractions) | "cal_compute" | "cal_leave" | "ping"}) and gets {"id": n, "ok": ..., ...} back.
 
 Each UDP gaze packet is JSON: {"t": device time (us), "l": [x, y, valid], "r": [x, y, valid],
-"model": ..., "serial": ...}, x and y as fractions of the display area (0-1, top-left),
-null when invalid.
+"lz": mm, "rz": mm, "model": ..., "serial": ...}: x and y as fractions of the display area
+(0-1, top-left), null when invalid; lz / rz how far each eye is from the tracker (the z of
+the SDK's gaze origin, in mm), null when invalid.
 """
 
 import argparse
@@ -36,6 +37,8 @@ def main() -> int:
     ap.add_argument("--serial", default=None, help="use this tracker if several are found")
     ap.add_argument("--fake", action="store_true",
                     help="no tracker: send a steady gaze on the screen centre (testing)")
+    ap.add_argument("--fake-distance-mm", type=float, default=520.0,
+                    help="with --fake: how far the pretend eyes are (mm)")
     args = ap.parse_args()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -69,10 +72,13 @@ def main() -> int:
 
     if args.fake:
         look = [0.5, 0.5]
+        dist = [args.fake_distance_mm]
 
         def fake_handle(msg):
             if msg.get("cmd") == "fake_look":          # tests: where the pretend eye looks
                 look[:] = [float(msg["x"]), float(msg["y"])]
+            if msg.get("cmd") == "fake_distance":      # tests: the pretend eye moves
+                dist[0] = float(msg["mm"])
             return dict(ok=True, status="calibration_status_success", points=5)
 
         print(f"FAKE gaze -> 127.0.0.1:{args.port}; commands on {args.port + 1}. "
@@ -80,7 +86,8 @@ def main() -> int:
         try:
             while True:
                 send({"t": int(time.time() * 1e6), "l": [look[0], look[1], 1],
-                      "r": [look[0], look[1], 1], "model": "FAKE", "serial": "none"})
+                      "r": [look[0], look[1], 1], "lz": dist[0], "rz": dist[0],
+                      "model": "FAKE", "serial": "none"})
                 serve(fake_handle, 1 / 120)
         except KeyboardInterrupt:
             return 0
@@ -110,9 +117,17 @@ def main() -> int:
             return [None, None, 0]
         return [x, y, 1]
 
+    def depth(data, side):
+        """How far the eye is from the tracker (mm): z of the gaze origin."""
+        if not data.get(f"{side}_gaze_origin_validity"):
+            return None
+        z = data.get(f"{side}_gaze_origin_in_user_coordinate_system", (float("nan"),) * 3)[2]
+        return None if math.isnan(z) else round(float(z), 1)
+
     def on_gaze(data):
         send({"t": data.get("system_time_stamp"), "l": point(data, "left"),
-              "r": point(data, "right"), "model": model, "serial": serial})
+              "r": point(data, "right"), "lz": depth(data, "left"), "rz": depth(data, "right"),
+              "model": model, "serial": serial})
 
     calib = tr.ScreenBasedCalibration(tracker)
     in_cal = [False]

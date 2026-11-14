@@ -37,9 +37,9 @@ class Tracker(FixationMonitor):
     watches_gaze = True
     calibration_supported = True
 
-    def __init__(self, error=0.3, cal_ok=True):
+    def __init__(self, error=0.3, cal_ok=True, distance=520.0):
         super().__init__()
-        self.error, self.cal_ok = error, cal_ok
+        self.error, self.cal_ok, self.distance = error, cal_ok, distance
         self.look = (0.0, 0.0)
         self.calls = []
 
@@ -48,6 +48,9 @@ class Tracker(FixationMonitor):
 
     def _read(self):
         return (self.look[0] + self.error, self.look[1])
+
+    def eye_distance_mm(self, window_s=0.5):
+        return self.distance
 
     def cal_enter(self):
         self.calls.append("enter")
@@ -114,9 +117,28 @@ o = session(t, tracker_calibrate=False)
 require(not any(isinstance(c, tuple) for c in t.calls) and o.gaze_check["validation"]["passed"],
         "no calibration commands; accuracy check only")
 
-print("5. the bridge protocol (fake bridge)")
+print("5. the eye's distance, measured by the tracker")
+t = Tracker(distance=342.0)          # the test geometry is set for 334 mm
+o = session(t)
+d = o.gaze_check.get("eye_distance_during_test_mm", {})
+require(o.gaze_check.get("eye_distance_mm") == 342.0
+        and "eye_distance_accepted_off_by_mm" not in o.gaze_check,
+        "8 mm off the set distance: within 2 cm, no message")
+require(all(r["eye_distance_mm"] == 342.0 for r in o.trial_rows)
+        and d.get("mean") == 342.0 and d.get("trials") == len(o.trial_rows),
+        f"every trial records the distance; summary {d}")
+t = Tracker(distance=414.0)
+o = session(t)
+require(o.gaze_check.get("eye_distance_accepted_off_by_mm") == 80.0,
+        "8 cm too far: the operator is asked to move the chin rest (went on: recorded)")
+o = session(Tracker(distance=414.0), check_eye_distance=False)
+require("eye_distance_accepted_off_by_mm" not in o.gaze_check,
+        "the distance check can be switched off")
+
+print("6. the bridge protocol (fake bridge)")
 bridge = subprocess.Popen([sys.executable, str(HERE / "tools" / "tobii_bridge.py"), "--fake",
-                           "--port", "5575"], stdout=subprocess.DEVNULL,
+                           "--port", "5575", "--fake-distance-mm", "548"],
+                          stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL)
 try:
     time.sleep(1.0)
@@ -130,6 +152,10 @@ try:
     m.cal_leave()
     require(good and res["ok"] and res["points"] == 5,
             f"enter, 5 points, compute, leave through the bridge: {res}")
+    time.sleep(0.6)
+    dist = m.eye_distance_mm()
+    require(dist is not None and abs(dist - 548.0) < 0.1,
+            f"the bridge sends the eye's distance: {dist} mm")
     m.end()
 finally:
     bridge.terminate()

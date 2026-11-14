@@ -99,6 +99,10 @@ class FixationMonitor:
     def cal_leave(self) -> None:
         raise NotImplementedError
 
+    def eye_distance_mm(self, window_s: float = 0.5) -> Optional[float]:
+        """How far the tested eye is from the screen (mm), if the tracker can tell."""
+        return None
+
     def target_shown(self, x_deg: float, y_deg: float) -> None:
         """A calibration / validation dot is now at (x_deg, y_deg). Real trackers ignore
         this; simulated observers use it to look there."""
@@ -183,6 +187,7 @@ class TobiiMonitor(FixationMonitor):
         self.serial = serial
         self._tracker = None
         self._size = (0, 0)
+        self._depths: List[Tuple[float, float]] = []
         self.model = ""
 
     def begin(self, backend, to_deg) -> None:
@@ -206,12 +211,36 @@ class TobiiMonitor(FixationMonitor):
 
     def _on_gaze(self, data: dict) -> None:
         side = "right" if self.eye == "R" else "left"
+        other = "left" if side == "right" else "right"
+        # Eye distance: the z of the gaze origin (mm from the tracker). The tracker sits on
+        # the screen's bottom bezel, so this is the eye's distance from the screen plane.
+        for s in (side, other):
+            if data.get(f"{s}_gaze_origin_validity"):
+                z = data.get(f"{s}_gaze_origin_in_user_coordinate_system",
+                             (float("nan"),) * 3)[2]
+                if not math.isnan(z):
+                    with self._lock:
+                        self._depths.append((time.perf_counter(), float(z)))
+                        if len(self._depths) > 2000:
+                            del self._depths[:1000]
+                    break
         g: Gaze = None
         if data.get(f"{side}_gaze_point_validity"):
             fx, fy = data[f"{side}_gaze_point_on_display_area"]
             if not (math.isnan(fx) or math.isnan(fy)):
                 g = self._to_deg(fx * self._size[0], fy * self._size[1])
         self._add(time.perf_counter(), g)
+
+    def eye_distance_mm(self, window_s: float = 0.5) -> Optional[float]:
+        """Median eye-to-screen distance over the last ``window_s`` seconds (mm), from the
+        tracker; the tested eye, or the other one when the tested eye is not seen."""
+        now = time.perf_counter()
+        with self._lock:
+            zs = [z for t, z in self._depths if now - t <= window_s]
+        if not zs:
+            return None
+        zs.sort()
+        return zs[len(zs) // 2]
 
     def current(self) -> Gaze:
         """The latest sample, if it is fresh (under 50 ms old)."""
@@ -313,13 +342,17 @@ class TobiiMonitor(FixationMonitor):
             return
         if msg.get("model") and not self.model:
             self.model = f"{msg['model']} ({msg.get('serial', '?')}) via bridge"
-        side = "r" if self.eye == "R" else "l"
-        x, y, valid = msg.get(side) or (None, None, 0)
-        x = float("nan") if x is None else float(x)
-        y = float("nan") if y is None else float(y)
-        self._on_gaze({f"{'right' if side == 'r' else 'left'}_gaze_point_validity": valid,
-                       f"{'right' if side == 'r' else 'left'}_gaze_point_on_display_area":
-                           (x, y)})
+        data = {}
+        for short, long in (("r", "right"), ("l", "left")):
+            x, y, valid = msg.get(short) or (None, None, 0)
+            data[f"{long}_gaze_point_validity"] = valid
+            data[f"{long}_gaze_point_on_display_area"] = (
+                float("nan") if x is None else float(x), float("nan") if y is None else float(y))
+            z = msg.get(short + "z")
+            data[f"{long}_gaze_origin_validity"] = z is not None
+            data[f"{long}_gaze_origin_in_user_coordinate_system"] = (
+                0.0, 0.0, float("nan") if z is None else float(z))
+        self._on_gaze(data)
 
     def _listen(self) -> None:
         while self._running:

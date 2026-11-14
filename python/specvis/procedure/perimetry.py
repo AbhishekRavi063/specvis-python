@@ -226,6 +226,11 @@ class PerimetrySettings:
     tracker_validate: bool = True
     tracker_max_centre_error_deg: float = 1.0
     tracker_max_mean_error_deg: float = 1.5
+    #: The tracker measures how far the eye is (Tobii gaze origin). At the start the test
+    #: asks to move the chin rest when it is further than this from the set viewing
+    #: distance (our suggestion); every trial records the distance measured.
+    check_eye_distance: bool = True
+    eye_distance_tolerance_mm: float = 20.0
     answer_key: str = "space"
     pause_key: str = "p"
     cancel_key: str = "escape"
@@ -913,6 +918,42 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             if key != "r":
                 return
 
+    def distance_now():
+        """The eye's distance from the screen now (mm, rounded), or '' when not measured."""
+        if not watching:
+            return ""
+        d = monitor.eye_distance_mm(0.3)
+        return "" if d is None else round(d, 1)
+
+    def check_eye_distance() -> None:
+        """Is the eye at the viewing distance the spots were placed for? The tracker can
+        tell (no ruler needed)."""
+        set_mm = settings.viewing_distance_mm
+        while True:
+            d = None
+            for _ in range(int(1000 / POLL_MS)):
+                monitor.current()
+                wait(POLL_MS)
+                d = monitor.eye_distance_mm(0.5)
+            if d is None:
+                gaze_check["eye_distance_mm"] = None
+                return
+            gaze_check["eye_distance_mm"] = round(d, 1)
+            if abs(d - set_mm) <= settings.eye_distance_tolerance_mm:
+                return
+            key = backend.show_screen(
+                f"The eye is {d / 10:.1f} cm from the screen, but this test is set for "
+                f"{set_mm / 10:.0f} cm.\n\nMove the chin rest "
+                f"{'closer' if d > set_mm else 'further away'} by about "
+                f"{abs(d - set_mm) / 10:.0f} cm (or change the viewing distance in Step 2).\n\n"
+                f"R = measure again   {seen_key.upper()} = go on anyway   "
+                f"{abort_key.upper()} = stop", keys=[seen_key, "r", abort_key])
+            if key == abort_key:
+                raise Aborted
+            if key != "r":
+                gaze_check["eye_distance_accepted_off_by_mm"] = round(d - set_mm, 1)
+                return
+
     def check_gaze_at_start() -> None:
         """Before the test: is the tracker's gaze on the + when the person looks at it?
         A large offset means the calibration is off."""
@@ -1010,6 +1051,7 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                    estimate_contrast=(round(10 ** point.zest.estimate_log, 5) if point else ""),
                    posterior_sd_log10=_sd(point),
                    gaze_max_deg=gaze_info.get("gaze_max_deg", ""),
+                   eye_distance_mm=distance_now(),
                    gaze_valid_pct=gaze_info.get("gaze_valid_pct", ""),
                    note=note)
         rows.append(row)
@@ -1202,6 +1244,8 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 raise SessionError(f"Fixation monitor ({settings.fixation_monitoring}): {e}")
             monitor_started = True
         if watching and show_instructions:
+            if settings.check_eye_distance:
+                check_eye_distance()
             if monitor.calibration_supported and (settings.tracker_calibrate
                                                   or settings.tracker_validate):
                 calibrate_and_validate()
@@ -1314,6 +1358,13 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
     finally:
         if monitor_started:
             monitor.end()
+
+    dists = [r["eye_distance_mm"] for r in rows if r.get("eye_distance_mm") not in ("", None)]
+    if dists:
+        gaze_check["eye_distance_during_test_mm"] = dict(
+            mean=round(float(np.mean(dists)), 1), min=round(float(min(dists)), 1),
+            max=round(float(max(dists)), 1), trials=len(dists),
+            set_mm=settings.viewing_distance_mm)
 
     # SITA's post-processing: every estimate again, with the false-answer rates this
     # participant actually showed (blank presses + too-early presses; strong misses).
