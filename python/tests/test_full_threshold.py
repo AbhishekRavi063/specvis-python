@@ -172,7 +172,7 @@ require(len(seeds) == 4 and all(p.prior_source.startswith("fixed start") for p i
         "the 4 seed points start at the fixed start")
 first = {}
 for row in out.trial_rows:
-    if row["kind"] == "zest" and row["point"] not in first:
+    if row["kind"] == "staircase" and row["point"] not in first:
         first[row["point"]] = row["trial"]
 last_seed = max(max(r["trial"] for r in out.trial_rows if r["point"] == p.index)
                 for p in seeds)
@@ -181,6 +181,9 @@ require(all(first[p.index] > last_seed for p in out.points if not p.seed),
 require(all(p.prior_source.startswith("growth pattern") for p in out.points if not p.seed),
         "every other point starts from finished neighbours (growth pattern)")
 require(not out.post_processing, "no SITA post-processing")
+require({r["kind"] for r in out.trial_rows} >= {"staircase"} and
+        "zest" not in {r["kind"] for r in out.trial_rows},
+        "trials.csv labels the staircase trials 'staircase', not 'zest'")
 
 flashes = {}
 for rule in (False, True):
@@ -252,7 +255,7 @@ for f, name, n_blind in ((healthy, "healthy", 0), (right_hemianopia, "hemianopia
     require(o.contrast_range["ft_start_db"] == o.contrast_range["middle_db"]
             and o.contrast_range["ft_start_rule"] == "middle of the measurable range",
             f"24-2, {name}: seeds started at {o.contrast_range['ft_start_db']} dB, the middle")
-    first = [r["requested_contrast"] for r in o.trial_rows if r["kind"] == "zest"][:1]
+    first = [r["requested_contrast"] for r in o.trial_rows if r["kind"] == "staircase"][:1]
     require(first and abs(-20 * math.log10(first[0]) - o.contrast_range["middle_db"]) < 0.1,
             f"24-2, {name}: the first test flash is at the middle")
 o, _ = run(healthy, 22, settings_overrides=dict(LAB, ft_start_contrast=0.1))

@@ -121,6 +121,7 @@ H24_2_SEEDS = ((-9, 9), (9, 9), (-9, -9), (9, -9))   # the Humphrey's primary po
 
 # Point and trial kinds, as written to trials.csv
 ZEST_TRIAL, PROBE_TRIAL = "zest", "zest_probe_max"
+STAIRCASE_TRIAL = "staircase"             # a Full Threshold (4-2) trial
 BLANK, HIGH, BLIND_SPOT, PRACTICE = "blank_catch", "high_catch", "blind_spot", "practice"
 BLIND_SPOT_SEARCH, SEARCH_CHECK = "blind_spot_search", "blind_spot_search_check"
 FIXATION_BREAK = "FIXATION_BREAK"
@@ -1438,7 +1439,8 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 last = p
                 if not p.started:
                     start_point(p)
-                kind = PROBE_TRIAL if p.zest.probing else ZEST_TRIAL
+                kind = (PROBE_TRIAL if p.zest.probing else
+                        STAIRCASE_TRIAL if settings.strategy == FULL_THRESHOLD else ZEST_TRIAL)
                 contrast = p.zest.next_level()
                 seen, rt = present(texture(p.x_deg, p.y_deg, contrast))
                 if seen is None:
