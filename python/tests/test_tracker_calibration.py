@@ -16,7 +16,8 @@ HERE = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
 
-from specvis.procedure.fixation import FIX_TRACKER, FixationMonitor, TobiiMonitor  # noqa: E402
+from specvis.procedure.fixation import (FIX_TRACKER, FixationMonitor,  # noqa: E402
+                                       ScriptedMonitor, TobiiMonitor)
 from specvis.procedure.perimetry import (FULL_THRESHOLD, H24_2_CENTRAL,  # noqa: E402
                                          TRACKER_CAL_POINTS, PerimetrySettings, run_perimetry,
                                          write_outputs)
@@ -135,7 +136,28 @@ o = session(Tracker(distance=414.0), check_eye_distance=False)
 require("eye_distance_accepted_off_by_mm" not in o.gaze_check,
         "the distance check can be switched off")
 
-print("6. the bridge protocol (fake bridge)")
+print("6. feedback when the eye moves during a patch")
+s = PerimetrySettings(participant_id="FB", strategy=FULL_THRESHOLD, extent=H24_2_CENTRAL,
+                      screen_width_mm=302.0, viewing_distance_mm=334.0,
+                      fixation_monitoring=FIX_TRACKER)
+obs = Observer(healthy, random.Random(4), width_mm=302.0, dist_mm=334.0)
+obs.open(W, H, 0.5)
+o = run_perimetry(s, obs, rng=random.Random(4), show_instructions=False,
+                  fixation_monitor=ScriptedMonitor(lambda i: (6.0, 0.0) if i % 9 == 4 else (0, 0)))
+msgs = getattr(obs, "messages", [])
+require(o.counts["fixation_breaks"] > 0 and len(msgs) == o.counts["fixation_breaks"]
+        == o.counts.get("fixation_feedback") and all("+" in m for m in msgs),
+        f"every eye movement during a patch -> 'Keep looking at the +' "
+        f"({len(msgs)} of {o.counts['fixation_breaks']} breaks)")
+require(o.valid or not o.checks["fixation"], "the session still completes")
+obs2 = Observer(healthy, random.Random(4), width_mm=302.0, dist_mm=334.0)
+obs2.open(W, H, 0.5)
+run_perimetry(PerimetrySettings(**{**s.__dict__, "fixation_feedback": False}), obs2,
+              rng=random.Random(4), show_instructions=False,
+              fixation_monitor=ScriptedMonitor(lambda i: (6.0, 0.0) if i % 9 == 4 else (0, 0)))
+require(not getattr(obs2, "messages", []), "feedback can be switched off")
+
+print("7. the bridge protocol (fake bridge)")
 bridge = subprocess.Popen([sys.executable, str(HERE / "tools" / "tobii_bridge.py"), "--fake",
                            "--port", "5575", "--fake-distance-mm", "548"],
                           stdout=subprocess.DEVNULL,

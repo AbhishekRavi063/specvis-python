@@ -294,6 +294,21 @@ class PsychoPyBackend(StimulusBackend):
         x, y = self._mouse.getPos()
         return (x * self._scale + win.size[0] / 2.0, win.size[1] / 2.0 - y * self._scale)
 
+    def show_message(self, text: str, ms: float, fixation: Optional[Fixation] = None) -> None:
+        """A message above the + for ``ms`` ms (counted in frames), no key needed."""
+        from psychopy import visual
+
+        win = self._require_window()
+        h = win.size[1] / self._scale
+        message = visual.TextStim(win, text=text, units="pix", height=h * 0.03,
+                                  color="white", pos=(0, h * 0.12), wrapWidth=h)
+        refresh = self._measured_refresh if self._measured_refresh == self._measured_refresh \
+            else 60.0
+        for _ in range(max(1, int(round(ms / 1000.0 * refresh)))):
+            message.draw()
+            self._draw_fixation(fixation)
+            win.flip()
+
     def show_screen(self, text: str, marks: Sequence[Mark] = (),
                     keys: Sequence[str] = ("space",)) -> str:
         """Text, plus labelled circles placed in screen pixels (top-left origin)."""

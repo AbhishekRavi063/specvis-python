@@ -228,6 +228,11 @@ class PerimetrySettings:
     fixation_tolerance_deg: float = 2.5   # the eye must stay within this of the +
     fixation_hold_ms: float = 200.0       # held this long before a patch is shown
     fixation_wait_ms: float = 5000.0      # then a "look at the +" reminder
+    #: Feedback to the person (our addition; Sanchez-Lopez et al. gave constant feedback
+    #: on fixation): the + turns red while the eye is off it, and after a trial thrown
+    #: away for an eye movement "Keep looking at the +" shows for a moment.
+    fixation_feedback: bool = True
+    fixation_off_colour: str = "red"
     #: Eye tracker: calibrate each person at the start, Tobii-style (a dot that shrinks
     #: and bursts at the centre and near the 4 corners), then measure the accuracy at 5
     #: dots with the tested eye. The accuracy limits are our suggestion (not from a
@@ -763,6 +768,11 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
 
     POLL_MS = 16.0
 
+    def fixation_colour(colour: str) -> None:
+        """The + in red while the eye is off it (feedback on); back to normal on it."""
+        if settings.fixation_feedback and hasattr(backend, "fixation_colour"):
+            backend.fixation_colour = colour
+
     def wait_for_fixation() -> None:
         """Hold the patch back until the eye has been on the + for ``fixation_hold_ms``.
         Time is counted in the waits asked for, so a test without a screen runs at
@@ -770,7 +780,9 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         held = waited = 0.0
         while True:
             g = monitor.current()
-            if g is not None and math.hypot(*g) <= settings.fixation_tolerance_deg:
+            on = g is not None and math.hypot(*g) <= settings.fixation_tolerance_deg
+            fixation_colour(settings.fixation_colour if on else settings.fixation_off_colour)
+            if on:
                 held += POLL_MS
                 if held >= settings.fixation_hold_ms:
                     return
@@ -1053,6 +1065,11 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             counts["fixation_breaks"] += int(not fixated)
             gaze_info.update(gaze_max_deg="" if math.isnan(worst) else round(worst, 2),
                              gaze_valid_pct=round(100 * frac))
+            if not fixated and settings.fixation_feedback:
+                # Right away, so the person knows; the next patch waits for the eye anyway.
+                fixation_colour(settings.fixation_off_colour)
+                backend.show_message("Keep looking at the  +", 1000.0, fixation=fixation)
+                counts["fixation_feedback"] = counts.get("fixation_feedback", 0) + 1
 
         gap = rng.uniform(*settings.iti_ms) + (0.0 if seen else settings.miss_extra_pause_ms)
         wait(gap)

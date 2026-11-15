@@ -862,6 +862,9 @@ class FixMonitorDialog(QDialog):
         self.limit = _spin(0.0, 100.0, 100 * s.max_fixation_loss_rate, 5.0, 0, "%")
         self.tolerance = _spin(1.0, 5.0, s.fixation_tolerance_deg, 0.5, 1, "deg")
         self.hold = _spin(0.0, 1000.0, s.fixation_hold_ms, 50.0, 0, "ms")
+        self.feedback = QCheckBox("Tell the person when the eye moves (red + and "
+                                  "'Keep looking at the +')")
+        self.feedback.setChecked(s.fixation_feedback)
         self.cal = QCheckBox("Calibrate the eye tracker at the start (Tobii 5-point)")
         self.cal.setChecked(s.tracker_calibrate)
         self.val = QCheckBox("Then measure its accuracy with the tested eye (5 dots)")
@@ -880,6 +883,7 @@ class FixMonitorDialog(QDialog):
         form.addRow(_label("Eye tracker / mouse", "note"))
         form.addRow("Eye must stay within", self.tolerance)
         form.addRow("Eye on the + before each patch", self.hold)
+        form.addRow(self.feedback)
         form.addRow(self.cal)
         form.addRow(self.val)
         form.addRow("Accuracy needed at the centre (our suggestion)", self.max_centre)
@@ -901,6 +905,7 @@ class FixMonitorDialog(QDialog):
                     max_fixation_loss_rate=self.limit.value() / 100.0,
                     fixation_tolerance_deg=self.tolerance.value(),
                     fixation_hold_ms=self.hold.value(),
+                    fixation_feedback=self.feedback.isChecked(),
                     tracker_calibrate=self.cal.isChecked(),
                     tracker_validate=self.val.isChecked(),
                     tracker_max_centre_error_deg=self.max_centre.value(),

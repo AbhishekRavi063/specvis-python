@@ -159,6 +159,10 @@ class StimulusBackend(abc.ABC):
                     keys: Sequence[str] = ("space",)) -> str:
         """Show text (and optional marks) until one of ``keys`` is pressed; return it."""
 
+    def show_message(self, text: str, ms: float, fixation: Optional[Fixation] = None) -> None:
+        """A short message for ``ms`` milliseconds, no key needed, with the fixation mark
+        still drawn (e.g. 'Keep looking at the +' after the eye moved). Default: nothing."""
+
     def pointer_px(self) -> Optional[Tuple[float, float]]:
         """The mouse pointer in screen pixels (top-left, y down), or None when this
         display cannot tell. Used only to stand in for an eye tracker in testing."""
@@ -203,6 +207,10 @@ class NullBackend(StimulusBackend):
                     keys: Sequence[str] = ("space",)) -> str:
         self.screens.append(text)
         return keys[0]
+
+    def show_message(self, text: str, ms: float, fixation: Optional[Fixation] = None) -> None:
+        self.messages = getattr(self, "messages", [])
+        self.messages.append(text)
 
     def present_train(self, polarities: Sequence[Texture], frames_per_reversal: int,
                       total_frames: int, fixation: Optional[Fixation] = None,
