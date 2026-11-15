@@ -148,13 +148,15 @@ class PerimetrySettings:
     strategy: str = FULL_THRESHOLD        # the team's choice (2026-11-13): no normal table
 
     # Screen, measured
-    screen_width_mm: float = 544.0        # the lab BenQ 24.5": 544 x 303 mm picture area
+    screen_width_mm: float = 542.3        # the lab BenQ 24.5" 16:9: 542.3 x 305.0 mm, the size
+                                          # a 24.5" 16:9 panel has and the eye tracker uses
+                                          # (the monitor reports a rounded 544 x 303)
     viewing_distance_mm: float = 510.0    # in the eye tracker's 50-80 cm; the study grid
                                           # fits up to 52.8 cm on the BenQ
-    #: The screen's height as measured or reported (BenQ: 303 mm). Used, when smaller than
+    #: The screen's height as measured or reported (BenQ: 305.0 mm). Used, when smaller than
     #: width x pixel ratio, for the "does it fit" check (the safe side); spots are placed
     #: with square pixels, as the panel's are. 0 = from the width and the pixels.
-    screen_height_mm: float = 303.0
+    screen_height_mm: float = 305.0
 
     # Stimulus: the ReFreM SSVEP Gabor, shown static
     diameter_degrees: float = 2.0
@@ -247,6 +249,9 @@ class PerimetrySettings:
     tracker_max_centre_error_deg: float = 1.0
     tracker_max_mean_error_deg: float = 1.5
     tracker_max_data_loss_pct: float = 20.0     # our suggestion
+    #: The tracker's own idea of the screen size (its display area) must match the
+    #: settings, or every gaze position is off; checked at the start (tolerance in mm).
+    display_area_tolerance_mm: float = 3.0
     #: How high the eyes sit above the tracker when they are level with the screen centre
     #: (half the screen height + the bezel): the middle of the positioning screen.
     tracker_eye_height_mm: float = 170.0
@@ -1006,6 +1011,32 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         d = monitor.eye_distance_mm(0.3)
         return "" if d is None else round(d, 1)
 
+    def check_display_area() -> None:
+        """Does the eye tracker know the screen at the size the test uses? (On the lab PC
+        it was still set for an older 27" monitor.)"""
+        try:
+            da = monitor.display_area()
+        except RuntimeError:
+            da = None
+        if not da:
+            return
+        gaze_check["tracker_display_area"] = da
+        dw = da["width_mm"] - settings.screen_width_mm
+        dh = da["height_mm"] - settings.screen_height_mm if settings.screen_height_mm > 0 else 0
+        tol = settings.display_area_tolerance_mm
+        if abs(dw) <= tol and abs(dh) <= tol:
+            return
+        gaze_check["tracker_display_area_mismatch_mm"] = [round(dw, 1), round(dh, 1)]
+        key = backend.show_screen(
+            f"The eye tracker has the screen as {da['width_mm']:.1f} x {da['height_mm']:.1f} mm, "
+            f"but these settings say {settings.screen_width_mm:.1f} x "
+            f"{settings.screen_height_mm:.1f} mm.\nEvery gaze position will be off.\n\n"
+            "Set the tracker's screen with:  python\\specvis.bat tracker-display\n\n"
+            f"{seen_key.upper()} = go on anyway   {abort_key.upper()} = stop",
+            keys=[seen_key, abort_key])
+        if key == abort_key:
+            raise Aborted
+
     def position_head() -> None:
         """Live head positioning (as Tobii Eye Tracker Manager and Titta show it): the eyes
         drawn where the tracker sees them, against a target circle, with the distance
@@ -1357,6 +1388,7 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 raise SessionError(f"Fixation monitor ({settings.fixation_monitoring}): {e}")
             monitor_started = True
         if watching and show_instructions:
+            check_display_area()
             if settings.check_eye_distance:
                 if monitor.head_position() is not None:
                     position_head()

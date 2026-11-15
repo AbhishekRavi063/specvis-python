@@ -11,6 +11,7 @@ rem     python\specvis.bat calibrate    measure the screen with the ColorCAL
 rem     python\specvis.bat preflight    check screen, ColorCAL, scale, eye tracker
 rem     python\specvis.bat tracker-setup   once: python\.venv-tobii (Python 3.10 + tobii-research)
 rem     python\specvis.bat tracker-bridge  before each eye-tracker session; leave it open
+rem     python\specvis.bat tracker-display show / set the tracker's screen geometry
 rem
 rem Results are saved in python\output\ (never on GitHub).
 
@@ -34,7 +35,8 @@ if /I "%~1"=="test"        ( "%PY%" "%HERE%run_tests.py" & exit /b )
 if /I "%~1"=="calibrate"   ( "%PY%" "%HERE%tools\calibrate_photometer.py" %2 %3 %4 %5 %6 %7 %8 %9 & exit /b )
 if /I "%~1"=="preflight"   ( "%PY%" "%HERE%tools\preflight.py" %2 %3 %4 %5 %6 %7 %8 %9 & exit /b )
 if /I "%~1"=="display"     ( "%PY%" "%HERE%tools\measure_display.py" %2 %3 %4 %5 & exit /b )
-echo usage: python\specvis.bat {setup^|app^|app-simple^|perimetry^|build-table^|redraw-maps^|test^|display^|calibrate^|preflight^|tracker-setup^|tracker-bridge}
+if /I "%~1"=="tracker-display" ( "%PY%" "%HERE%tools\tracker_display.py" %2 %3 %4 %5 %6 %7 %8 %9 & exit /b )
+echo usage: python\specvis.bat {setup^|app^|app-simple^|perimetry^|build-table^|redraw-maps^|test^|display^|calibrate^|preflight^|tracker-setup^|tracker-bridge^|tracker-display}
 exit /b 2
 
 :trackersetup

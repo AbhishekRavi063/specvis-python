@@ -76,6 +76,11 @@ case "${1:-}" in
         shift
         exec "$PY" "$HERE/tools/calibrate_photometer.py" "$@"
         ;;
+    tracker-display)
+        need_venv
+        shift
+        exec "$PY" "$HERE/tools/tracker_display.py" "$@"
+        ;;
     preflight)
         need_venv
         shift
@@ -109,7 +114,7 @@ case "${1:-}" in
         echo "Done. Try:  python/specvis.sh test"
         ;;
     *)
-        echo "usage: python/specvis.sh {app|app-simple|run|perimetry|build-table|redraw-maps|test|display|calibrate|preflight|tracker-setup|tracker-bridge|setup}" >&2
+        echo "usage: python/specvis.sh {app|app-simple|run|perimetry|build-table|redraw-maps|test|display|calibrate|preflight|tracker-setup|tracker-bridge|tracker-display|setup}" >&2
         exit 2
         ;;
 esac

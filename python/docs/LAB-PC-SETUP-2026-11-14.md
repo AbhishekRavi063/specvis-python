@@ -140,6 +140,25 @@ Preset: **"Lab monitor – eye tracker, 24-2 within 15 deg (51 cm)"**.
 
 The Aflah grid and the 24-2 without its top/bottom rows stay available for comparison.
 
+## Update 15 Nov (2): the eye tracker's screen size (display area)
+
+- The Tobii was still set for an older **27"** screen (597 × 335.8 mm). That's the likely
+  cause of the poor accuracy on 14 Nov (about 1.4°).
+- On 15 Nov it read **542.3 × 305.0 mm**, which is the true size of a 24.5" 16:9 panel
+  (542.4 × 305.1 mm). The monitor's own report (544 × 303 mm) is rounded. Accuracy was then
+  about 0.5°.
+- **The app now uses 542.3 × 305.0 mm**, the same as the tracker.
+- **It checks the tracker's screen size** at the start of every eye-tracker session, and so
+  does preflight; it warns if they differ by more than 3 mm.
+- Eye Tracker Manager on this PC shows no Display Setup for the Fusion. Instead, use
+  `python\specvis.bat tracker-display` (show) or `tracker-display --set` (set, with a
+  backup), with the bridge running.
+- The current geometry: the picture's bottom edge is 10.9 mm above the tracker's centre,
+  its centre 5.8 mm to the right, and the angle 20°. These were not measured: use a phone
+  level app for the angle and a bank card (85.6 × 54 mm) for the gap.
+- Calibration points 2 and 3, which failed every time, were the **top corners**. Likely
+  causes: eyelids when looking up, or the eyes sitting too low.
+
 ## Open items
 
 - [ ] Record the monitor brightness setting used for this calibration

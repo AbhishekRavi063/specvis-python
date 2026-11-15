@@ -38,9 +38,9 @@ class Tracker(FixationMonitor):
     watches_gaze = True
     calibration_supported = True
 
-    def __init__(self, error=0.3, cal_ok=True, distance=520.0):
+    def __init__(self, error=0.3, cal_ok=True, distance=520.0, area=(302.0, 302.0 * 1964 / 3024)):
         super().__init__()
-        self.error, self.cal_ok, self.distance = error, cal_ok, distance
+        self.error, self.cal_ok, self.distance, self.area = error, cal_ok, distance, area
         self.look = (0.0, 0.0)
         self.calls = []
 
@@ -52,6 +52,9 @@ class Tracker(FixationMonitor):
 
     def eye_distance_mm(self, window_s=0.5):
         return self.distance
+
+    def display_area(self):
+        return dict(width_mm=self.area[0], height_mm=self.area[1])
 
     def head_position(self):
         return dict(left=(-32.0, 170.0, self.distance), right=(32.0, 170.0, self.distance),
@@ -78,6 +81,7 @@ class Tracker(FixationMonitor):
 def session(tracker, **over):
     s = PerimetrySettings(participant_id="CAL", strategy=FULL_THRESHOLD, extent=H24_2_CENTRAL,
                           screen_width_mm=302.0, viewing_distance_mm=334.0,
+                          screen_height_mm=302.0 * 1964 / 3024,
                           fixation_monitoring=FIX_TRACKER, **over)
     obs = Observer(healthy, random.Random(3), width_mm=302.0, dist_mm=334.0)
     obs.open(W, H, 0.5)
@@ -158,6 +162,27 @@ require("Distance 34.2 cm" in text and "good" in text
         and sorted(m.label for m in marks if m.label) == ["L", "R"],
         "live positioning screen: both eyes drawn, distance shown, 'good' inside +/-1 cm")
 
+print("5b. the tracker's own screen size is checked")
+o = session(Tracker())
+require("tracker_display_area" in o.gaze_check
+        and "tracker_display_area_mismatch_mm" not in o.gaze_check,
+        "same size as the settings: no warning; the tracker's size is saved")
+o = session(Tracker(area=(597.0, 335.8)))
+require(o.gaze_check.get("tracker_display_area_mismatch_mm") == [295.0, 139.7],
+        "tracker still set for another screen (597 x 335.8 mm): warned, the difference saved")
+
+sys.path.insert(0, str(HERE / "tools"))
+import tracker_display  # noqa: E402
+area = dict(top_left=[-265.4, 297.6, 97.7], top_right=[276.9, 297.6, 97.7],
+            bottom_left=[-265.4, 10.9, -6.7])
+g = tracker_display.geometry(area)
+back = tracker_display.corners(g["width_mm"], g["height_mm"], g["gap_mm"], g["offset_mm"],
+                               g["depth_mm"], g["tilt_deg"])
+require(all(abs(a - b) < 0.05 for k in area for a, b in zip(area[k], back[k]))
+        and abs(g["tilt_deg"] - 20.0) < 0.1 and abs(g["width_mm"] - 542.3) < 0.05,
+        f"tracker-display geometry: corners -> gap {g['gap_mm']:.1f} mm, tilt "
+        f"{g['tilt_deg']:.1f} deg -> the same corners")
+
 print("6. feedback when the eye moves during a patch")
 s = PerimetrySettings(participant_id="FB", strategy=FULL_THRESHOLD, extent=H24_2_CENTRAL,
                       screen_width_mm=302.0, viewing_distance_mm=334.0,
@@ -200,6 +225,9 @@ try:
     dist = m.eye_distance_mm()
     require(dist is not None and abs(dist - 548.0) < 0.1,
             f"the bridge sends the eye's distance: {dist} mm")
+    da = m.display_area()
+    require(da and abs(da["width_mm"] - 542.3) < 0.1 and abs(da["height_mm"] - 305.1) < 0.1,
+            f"the bridge reports the tracker's screen: {da['width_mm']} x {da['height_mm']} mm")
     head = m.head_position()
     require(head and head["left"][0] < 0 < head["right"][0] and abs(head["left"][2] - 548) < 0.1,
             f"and both eyes' positions (mm, Tobii user coordinates): {head}")

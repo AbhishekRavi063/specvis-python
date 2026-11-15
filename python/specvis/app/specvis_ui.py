@@ -1223,9 +1223,9 @@ class SpecvisWindow(QMainWindow):
                           _fixed(_button("Refresh", self._fill_screens), 100, 40)]))
         self.f_res_x, self.f_res_y = _fixed(_readonly(), 210, 40), _fixed(_readonly(), 210, 40)
         v.addLayout(_row([_lab("Screen visual bounds (px)", 250, 40, 20), self.f_res_x, self.f_res_y]))
-        self.f_width = _fixed(_spin(0.0, 3000.0, 544.0, 1.0, 1), 210, 40)
-        self.f_height = _fixed(_spin(0.0, 3000.0, 303.0, 1.0, 1), 210, 40)
-        self.f_height.setToolTip("The screen's height as measured / reported (BenQ: 303 mm). "
+        self.f_width = _fixed(_spin(0.0, 3000.0, 542.3, 0.1, 1), 210, 40)
+        self.f_height = _fixed(_spin(0.0, 3000.0, 305.0, 0.1, 1), 210, 40)
+        self.f_height.setToolTip("The screen's height (BenQ 24.5\": 305.0 mm, as the tracker has it). "
                                  "Used for the fit check when smaller than width x aspect "
                                  "ratio. 0 = from the width and the aspect ratio.")
         v.addLayout(_row([_lab("Screen size (mm)", 250, 40, 20), self.f_width, self.f_height]))

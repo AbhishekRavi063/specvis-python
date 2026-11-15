@@ -115,8 +115,8 @@ require(win.current_participant().id == "PILOT02", "PILOT02 selected")
 
 win.preset_box.setCurrentIndex(1)                   # lab monitor: the measured BenQ
 win.apply_preset()
-require(abs(win.settings.screen_width_mm - 544.0) < 1e-9,
-        "lab preset carries the measured width (BenQ 24.5\", 544 mm)")
+require(abs(win.settings.screen_width_mm - 542.3) < 1e-9,
+        "lab preset carries the screen width (BenQ 24.5\", 542.3 mm)")
 win.width_cm.setValue(0.0)                          # a screen whose width is not entered
 require(any("screen width" in p for p in win.problems()),
         "no width: start is blocked until it is measured")

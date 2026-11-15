@@ -45,6 +45,31 @@ def screens():
         return []
 
 
+def display_line(area, width_mm: float, height_mm: float, tol_mm: float = 3.0) -> None:
+    """Does the eye tracker know the screen at the size the test uses?"""
+    if not area:
+        print("        tracker's screen size: not available")
+        return
+    w, h = float(area["width_mm"]), float(area["height_mm"])
+    ok = abs(w - width_mm) <= tol_mm and (height_mm <= 0 or abs(h - height_mm) <= tol_mm)
+    report(ok, f"tracker's screen {w:.1f} x {h:.1f} mm (settings: {width_mm:.1f} x "
+               f"{height_mm:.1f} mm)",
+           "set it: python/specvis.sh tracker-display --set   (see --help)")
+
+
+def bridge_display_area(port: int):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(3.0)
+    try:
+        s.sendto(json.dumps(dict(id=1, cmd="display_area")).encode(), ("127.0.0.1", port))
+        r = json.loads(s.recv(65536).decode())
+        return r if r.get("ok") else None
+    except (socket.timeout, OSError, ValueError):
+        return None
+    finally:
+        s.close()
+
+
 def distance_line(zs, set_mm: float, tol_mm: float = 10.0) -> None:
     """The eye's distance from the screen, as the tracker measures it."""
     if not zs:
@@ -61,10 +86,10 @@ def distance_line(zs, set_mm: float, tol_mm: float = 10.0) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--width-mm", type=float, required=True,
+    ap.add_argument("--width-mm", type=float, default=542.3,
                     help="the stimulus screen's visible width, measured with a ruler")
     ap.add_argument("--distance-mm", type=float, default=510.0, help="eye to screen")
-    ap.add_argument("--height-mm", type=float, default=303.0,
+    ap.add_argument("--height-mm", type=float, default=305.0,
                     help="screen height as measured / reported (0 = from the width)")
     ap.add_argument("--grid", choices=EXTENTS, default=H24_2_15,
                     help="the grid to check (default: the 24-2 within +/-15 deg)")
@@ -147,6 +172,9 @@ def main() -> int:
                    f"{sum(got)} with a valid eye (look at the screen to see valid ones)",
                    "no gaze data: check the tracker in Eye Tracker Manager")
             distance_line(zs, args.distance_mm, args.tolerance_mm)
+            da = t.get_display_area()
+            display_line(dict(width_mm=da.width, height_mm=da.height), args.width_mm,
+                         args.height_mm)
     else:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -169,6 +197,7 @@ def main() -> int:
                    f"({model or '?'})",
                    "start it in another terminal: python/specvis.sh tracker-bridge")
             distance_line(zs, args.distance_mm, args.tolerance_mm)
+            display_line(bridge_display_area(BRIDGE_PORT + 1), args.width_mm, args.height_mm)
         except OSError as e:
             report(False, f"port {BRIDGE_PORT}", f"in use? close other ReFreM windows ({e})")
         finally:

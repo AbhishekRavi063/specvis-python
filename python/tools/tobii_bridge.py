@@ -14,7 +14,9 @@ the participant calibrated, in Tobii Pro Eye Tracker Manager.
 
 The app can also run the Tobii calibration through the bridge: it sends JSON commands to
 127.0.0.1:5556 ({"id": n, "cmd": "cal_enter" | "cal_point" (with "x", "y" as display-area
-fractions) | "cal_compute" | "cal_leave" | "ping"}) and gets {"id": n, "ok": ..., ...} back.
+fractions) | "cal_compute" | "cal_leave" | "ping" | "display_area" | "set_display_area" (with
+"top_left", "top_right", "bottom_left" as [x, y, z] mm)}) and gets {"id": n, "ok": ...} back.
+The display area is the screen's position as the tracker knows it (Tobii user coordinates).
 
 Each UDP gaze packet is JSON: {"t": device time (us), "l": [x, y, valid], "r": [x, y, valid],
 "lz": mm, "rz": mm, "model": ..., "serial": ...}: x and y as fractions of the display area
@@ -30,6 +32,15 @@ import math
 import socket
 import sys
 import time
+
+
+def area_info(a: dict) -> dict:
+    """Corners plus width and height (mm) of a display area."""
+    tl, tr_, bl = a["top_left"], a["top_right"], a["bottom_left"]
+    width = math.dist(tl, tr_)
+    height = math.dist(tl, bl)
+    return dict(top_left=list(tl), top_right=list(tr_), bottom_left=list(bl),
+                width_mm=round(width, 1), height_mm=round(height, 1))
 
 
 def main() -> int:
@@ -75,8 +86,16 @@ def main() -> int:
     if args.fake:
         look = [0.5, 0.5]
         dist = [args.fake_distance_mm]
+        area = dict(top_left=[-265.4, 297.6, 97.7], top_right=[276.9, 297.6, 97.7],
+                    bottom_left=[-265.4, 10.9, -6.7])
 
         def fake_handle(msg):
+            if msg.get("cmd") == "display_area":
+                return dict(ok=True, **area_info(area))
+            if msg.get("cmd") == "set_display_area":
+                for k in ("top_left", "top_right", "bottom_left"):
+                    area[k] = [float(c) for c in msg[k]]
+                return dict(ok=True, **area_info(area))
             if msg.get("cmd") == "fake_look":          # tests: where the pretend eye looks
                 look[:] = [float(msg["x"]), float(msg["y"])]
             if msg.get("cmd") == "fake_distance":      # tests: the pretend eye moves
@@ -149,6 +168,17 @@ def main() -> int:
         c = msg.get("cmd")
         if c == "ping":
             return dict(ok=True, model=model, serial=serial)
+        if c == "display_area":
+            da = tracker.get_display_area()
+            return dict(ok=True, **area_info(dict(top_left=da.top_left, top_right=da.top_right,
+                                                  bottom_left=da.bottom_left)))
+        if c == "set_display_area":
+            corners = {k: tuple(float(v) for v in msg[k])
+                       for k in ("top_left", "top_right", "bottom_left")}
+            tracker.set_display_area(tr.DisplayArea(corners))
+            da = tracker.get_display_area()
+            return dict(ok=True, **area_info(dict(top_left=da.top_left, top_right=da.top_right,
+                                                  bottom_left=da.bottom_left)))
         if c == "cal_enter":
             if not in_cal[0]:
                 calib.enter_calibration_mode()

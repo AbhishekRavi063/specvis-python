@@ -103,6 +103,11 @@ class FixationMonitor:
         """How far the tested eye is from the screen (mm), if the tracker can tell."""
         return None
 
+    def display_area(self) -> Optional[dict]:
+        """Where the tracker thinks the screen is: {"width_mm", "height_mm", corners}.
+        None when there is no tracker to ask."""
+        return None
+
     def head_position(self) -> Optional[dict]:
         """For the positioning screen: {"left": (x, y, z) mm or None, "right": ...,
         "distance_mm"}, in Tobii's User Coordinate System (origin at the tracker's front
@@ -295,6 +300,15 @@ class TobiiMonitor(FixationMonitor):
                 return reply
         raise RuntimeError(f"the eye-tracker bridge did not answer '{cmd}' "
                            "(is python/specvis.sh tracker-bridge still running?)")
+
+    def display_area(self) -> Optional[dict]:
+        if getattr(self, "_sock", None) is not None:
+            r = self._cmd("display_area", timeout_s=3.0)
+            return r if r.get("ok") else None
+        da = self._tracker.get_display_area()
+        return dict(width_mm=round(float(da.width), 1), height_mm=round(float(da.height), 1),
+                    top_left=list(da.top_left), top_right=list(da.top_right),
+                    bottom_left=list(da.bottom_left))
 
     def cal_enter(self) -> None:
         if getattr(self, "_sock", None) is not None:
