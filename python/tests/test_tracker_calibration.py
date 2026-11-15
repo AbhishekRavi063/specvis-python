@@ -53,6 +53,10 @@ class Tracker(FixationMonitor):
     def eye_distance_mm(self, window_s=0.5):
         return self.distance
 
+    def head_position(self):
+        return dict(left=(-32.0, 170.0, self.distance), right=(32.0, 170.0, self.distance),
+                    distance_mm=self.distance)
+
     def cal_enter(self):
         self.calls.append("enter")
 
@@ -87,12 +91,18 @@ t = Tracker(error=0.3)
 o = session(t)
 pts = [c for c in t.calls if isinstance(c, tuple)]
 require(t.calls[0] == "enter" and t.calls[-2:] == ["compute", "leave"]
-        and [(p[1], p[2]) for p in pts] == [tuple(map(float, q)) for q in TRACKER_CAL_POINTS],
+        and sorted((p[1], p[2]) for p in pts) == sorted(tuple(map(float, q))
+                                                       for q in TRACKER_CAL_POINTS),
         "Tobii 5-point calibration: centre and 4 points in from the corners, then compute")
+require([(p[1], p[2]) for p in pts] == [tuple(q) for q in o.gaze_check["calibration"]["order"]],
+        f"random order, recorded: {o.gaze_check['calibration']['order']}")
 v = o.gaze_check.get("validation", {})
-require(v.get("passed") and len(v.get("points", [])) == 5 and abs(v["centre_error_deg"] - 0.3) < 0.05,
-        f"accuracy measured at 5 dots: centre {v.get('centre_error_deg')} deg, "
-        f"mean {v.get('mean_error_deg')}")
+require(v.get("passed") and len(v.get("points", [])) == 5
+        and abs(v["centre_accuracy_deg"] - 0.3) < 0.05 and abs(v["mean_accuracy_deg"] - 0.3) < 0.05
+        and v["data_loss_pct"] == 0 and v["precision_rms_deg"] is not None,
+        f"validation (Titta-style): accuracy {v.get('mean_accuracy_deg')} deg, centre "
+        f"{v.get('centre_accuracy_deg')}, precision {v.get('precision_rms_deg')}, "
+        f"loss {v.get('data_loss_pct')} %")
 require(o.gaze_check.get("passed") and o.valid and len(o.points) == 42,
         "passes, and the test then runs (42 spots)")
 with tempfile.TemporaryDirectory() as tmp:
@@ -136,6 +146,18 @@ o = session(Tracker(distance=414.0), check_eye_distance=False)
 require("eye_distance_accepted_off_by_mm" not in o.gaze_check,
         "the distance check can be switched off")
 
+obs = Observer(healthy, random.Random(3), width_mm=302.0, dist_mm=334.0)
+obs.open(W, H, 0.5)
+run_perimetry(PerimetrySettings(participant_id="POS", strategy=FULL_THRESHOLD,
+                                extent=H24_2_CENTRAL, screen_width_mm=302.0,
+                                viewing_distance_mm=334.0, fixation_monitoring=FIX_TRACKER),
+              obs, rng=random.Random(3), show_instructions=True,
+              fixation_monitor=Tracker(distance=342.0))
+text, marks = obs.statuses[0]
+require("Distance 34.2 cm" in text and "good" in text
+        and sorted(m.label for m in marks if m.label) == ["L", "R"],
+        "live positioning screen: both eyes drawn, distance shown, 'good' inside +/-1 cm")
+
 print("6. feedback when the eye moves during a patch")
 s = PerimetrySettings(participant_id="FB", strategy=FULL_THRESHOLD, extent=H24_2_CENTRAL,
                       screen_width_mm=302.0, viewing_distance_mm=334.0,
@@ -178,6 +200,9 @@ try:
     dist = m.eye_distance_mm()
     require(dist is not None and abs(dist - 548.0) < 0.1,
             f"the bridge sends the eye's distance: {dist} mm")
+    head = m.head_position()
+    require(head and head["left"][0] < 0 < head["right"][0] and abs(head["left"][2] - 548) < 0.1,
+            f"and both eyes' positions (mm, Tobii user coordinates): {head}")
     m.end()
 finally:
     bridge.terminate()

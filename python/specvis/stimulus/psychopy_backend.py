@@ -294,6 +294,37 @@ class PsychoPyBackend(StimulusBackend):
         x, y = self._mouse.getPos()
         return (x * self._scale + win.size[0] / 2.0, win.size[1] / 2.0 - y * self._scale)
 
+    def show_status(self, text: str, marks: Sequence[Mark], ms: float,
+                    keys: Sequence[str] = ("space",)) -> Optional[str]:
+        """Text at the top and marks (circles) for about ``ms`` ms; the key pressed or None."""
+        from psychopy import event, visual
+
+        win = self._require_window()
+        w, h = win.size[0] / self._scale, win.size[1] / self._scale
+        line_height = h * 0.024
+        draw = [visual.TextStim(win, text=text, units="pix", height=line_height,
+                                color="white", wrapWidth=w * 0.85, alignText="center",
+                                pos=(0, h * 0.5 - line_height), anchorVert="top")]
+        for mark in marks:
+            pos = self._to_units(mark.centre_px)
+            radius = mark.radius_px / self._scale
+            draw.append(visual.Circle(win, radius=radius, pos=pos, units="pix",
+                                      lineColor=mark.colour, fillColor=None, lineWidth=3))
+            if mark.label:
+                draw.append(visual.TextStim(win, text=mark.label, units="pix",
+                                            height=line_height * 0.8, color=mark.colour,
+                                            pos=pos))
+        refresh = self._measured_refresh if self._measured_refresh == self._measured_refresh \
+            else 60.0
+        for _ in range(max(1, int(round(ms / 1000.0 * refresh)))):
+            for d in draw:
+                d.draw()
+            win.flip()
+            pressed = event.getKeys(keyList=list(keys))
+            if pressed:
+                return pressed[0]
+        return None
+
     def show_message(self, text: str, ms: float, fixation: Optional[Fixation] = None) -> None:
         """A message above the + for ``ms`` ms (counted in frames), no key needed."""
         from psychopy import visual

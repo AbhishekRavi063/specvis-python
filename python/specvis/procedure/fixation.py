@@ -103,6 +103,13 @@ class FixationMonitor:
         """How far the tested eye is from the screen (mm), if the tracker can tell."""
         return None
 
+    def head_position(self) -> Optional[dict]:
+        """For the positioning screen: {"left": (x, y, z) mm or None, "right": ...,
+        "distance_mm"}, in Tobii's User Coordinate System (origin at the tracker's front
+        centre, x to the person's right, y up, z towards the person). None when the
+        tracker cannot tell."""
+        return None
+
     def target_shown(self, x_deg: float, y_deg: float) -> None:
         """A calibration / validation dot is now at (x_deg, y_deg). Real trackers ignore
         this; simulated observers use it to look there."""
@@ -224,12 +231,27 @@ class TobiiMonitor(FixationMonitor):
                         if len(self._depths) > 2000:
                             del self._depths[:1000]
                     break
+        eyes = {}
+        for s in ("left", "right"):
+            o = data.get(f"{s}_gaze_origin_in_user_coordinate_system")
+            eyes[s] = (None if not data.get(f"{s}_gaze_origin_validity") or not o
+                       or any(math.isnan(c) for c in o) else tuple(float(c) for c in o))
+        with self._lock:
+            self._eyes = (time.perf_counter(), eyes)
         g: Gaze = None
         if data.get(f"{side}_gaze_point_validity"):
             fx, fy = data[f"{side}_gaze_point_on_display_area"]
             if not (math.isnan(fx) or math.isnan(fy)):
                 g = self._to_deg(fx * self._size[0], fy * self._size[1])
         self._add(time.perf_counter(), g)
+
+    def head_position(self) -> Optional[dict]:
+        with self._lock:
+            stamp, eyes = getattr(self, "_eyes", (0.0, {}))
+        if time.perf_counter() - stamp > 0.2:
+            eyes = {}
+        return dict(left=eyes.get("left"), right=eyes.get("right"),
+                    distance_mm=self.eye_distance_mm(0.3))
 
     def eye_distance_mm(self, window_s: float = 0.5) -> Optional[float]:
         """Median eye-to-screen distance over the last ``window_s`` seconds (mm), from the
@@ -350,8 +372,10 @@ class TobiiMonitor(FixationMonitor):
                 float("nan") if x is None else float(x), float("nan") if y is None else float(y))
             z = msg.get(short + "z")
             data[f"{long}_gaze_origin_validity"] = z is not None
+            o = msg.get(short + "o")
             data[f"{long}_gaze_origin_in_user_coordinate_system"] = (
-                0.0, 0.0, float("nan") if z is None else float(z))
+                tuple(float(c) for c in o) if o else
+                (float("nan"), float("nan"), float("nan") if z is None else float(z)))
         self._on_gaze(data)
 
     def _listen(self) -> None:

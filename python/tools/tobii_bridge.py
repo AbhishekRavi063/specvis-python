@@ -19,7 +19,9 @@ fractions) | "cal_compute" | "cal_leave" | "ping"}) and gets {"id": n, "ok": ...
 Each UDP gaze packet is JSON: {"t": device time (us), "l": [x, y, valid], "r": [x, y, valid],
 "lz": mm, "rz": mm, "model": ..., "serial": ...}: x and y as fractions of the display area
 (0-1, top-left), null when invalid; lz / rz how far each eye is from the tracker (the z of
-the SDK's gaze origin, in mm), null when invalid.
+the SDK's gaze origin, in mm), null when invalid; lo / ro each eye's full position
+([x, y, z] mm in Tobii's User Coordinate System: origin at the tracker's front centre,
+x to the person's right, y up, z towards the person), for the head-positioning screen.
 """
 
 import argparse
@@ -87,6 +89,7 @@ def main() -> int:
             while True:
                 send({"t": int(time.time() * 1e6), "l": [look[0], look[1], 1],
                       "r": [look[0], look[1], 1], "lz": dist[0], "rz": dist[0],
+                      "lo": [-32.0, 170.0, dist[0]], "ro": [32.0, 170.0, dist[0]],
                       "model": "FAKE", "serial": "none"})
                 serve(fake_handle, 1 / 120)
         except KeyboardInterrupt:
@@ -124,9 +127,19 @@ def main() -> int:
         z = data.get(f"{side}_gaze_origin_in_user_coordinate_system", (float("nan"),) * 3)[2]
         return None if math.isnan(z) else round(float(z), 1)
 
+    def origin(data, side):
+        """The eye's position (mm, User Coordinate System), for positioning."""
+        if not data.get(f"{side}_gaze_origin_validity"):
+            return None
+        v = data.get(f"{side}_gaze_origin_in_user_coordinate_system")
+        if not v or any(math.isnan(c) for c in v):
+            return None
+        return [round(float(c), 1) for c in v]
+
     def on_gaze(data):
         send({"t": data.get("system_time_stamp"), "l": point(data, "left"),
               "r": point(data, "right"), "lz": depth(data, "left"), "rz": depth(data, "right"),
+              "lo": origin(data, "left"), "ro": origin(data, "right"),
               "model": model, "serial": serial})
 
     calib = tr.ScreenBasedCalibration(tracker)
