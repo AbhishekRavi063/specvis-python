@@ -34,7 +34,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
 
 from ..core.gabor import GaborParameters, render_brightness
 from ..core.luminance import LuminanceCalibration
-from ..procedure.perimetry import (CENTRAL, EXTENT_NAMES, EXTENTS, FAILURE_REASONS, FULL,
+from ..procedure.perimetry import (APP_EXTENTS, CENTRAL, EXTENT_NAMES, EXTENTS, FAILURE_REASONS, FULL,
                                    PerimetrySettings,
                                    blind_spot_position, field_half_degrees, fit_problem,
                                    grid_points, settings_from_dict, settings_to_dict)
@@ -535,7 +535,7 @@ class MainWindow(QMainWindow):
         grid = QGridLayout()
         s = self.settings
         self.extent_box = QComboBox()
-        for e in EXTENTS:
+        for e in APP_EXTENTS:
             self.extent_box.addItem(EXTENT_NAMES[e], e)
         self.pilot = QCheckBox("Pilot mode (the 15-20 table people: no starting guesses, "
                                "builds the normal table)")
@@ -621,6 +621,9 @@ class MainWindow(QMainWindow):
         self.window_ms.setValue(s.response_window_ms)
         self.iti_lo.setValue(s.iti_ms[0])
         self.iti_hi.setValue(s.iti_ms[1])
+        if self.extent_box.findData(s.extent) < 0:      # a grid from older settings
+            self.extent_box.addItem(EXTENT_NAMES.get(s.extent, s.extent) + "  (older settings)",
+                                    s.extent)
         self.extent_box.setCurrentIndex(max(0, self.extent_box.findData(s.extent)))
         self.pilot.setChecked(s.pilot_mode)
         self.sd_stop.setValue(s.zest.sd_stop)

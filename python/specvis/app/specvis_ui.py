@@ -43,7 +43,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDateEdit,
 
 from ..core.gabor import GaborParameters, minimum_renderable_contrast, render_brightness
 from ..core.luminance import MEASUREMENT_POINTS, LuminanceCalibration
-from ..procedure.perimetry import (CENTRAL, EXTENT_NAMES, EXTENTS, FAILURE_REASONS, FULL,
+from ..procedure.perimetry import (APP_EXTENTS, CENTRAL, EXTENT_NAMES, EXTENTS, FAILURE_REASONS, FULL,
                                    FULL_THRESHOLD, H24_2, SITA_FAST,
                                    STRATEGIES,
                                    STRATEGY_NAMES, PerimetrySettings, background_for,
@@ -1390,11 +1390,11 @@ class SpecvisWindow(QMainWindow):
         right.addLayout(_row([self.f_dither]))
         right.addWidget(_separator())
         self.f_grid = _fixed(QComboBox(), 450, H)
-        for e in EXTENTS:
+        for e in APP_EXTENTS:
             self.f_grid.addItem(EXTENT_NAMES[e], e)
-        self.f_grid.setToolTip("The test grid. With the eye tracker (Tobii Pro Fusion: 50-80 cm) "
-                               "use '24-2 without top/bottom rows' (50-53 cm) or 'Aflah grid' "
-                               "(50-60 cm). The full 24-2 needs about 33-37 cm on a 24\" screen.")
+        self.f_grid.setToolTip("The study grid: 24-2 positions without the top/bottom rows "
+                               "(42 points, 6 deg apart). Fits the BenQ from 50 to 52.8 cm; "
+                               "the eye tracker works from 50 cm, so 51 cm.")
         right.addLayout(_row([self.f_grid]))
         self.f_spacing = _fixed(_readonly("6 / 6"), 85, H)
         self.f_spacing.setToolTip("Grid spacing across / up-down, in degrees; no point on a midline")
@@ -1623,6 +1623,9 @@ class SpecvisWindow(QMainWindow):
         self.f_bg.setValue(s.background_cd_m2 if s.background_cd_m2 > 0 else 10.0)
         self.f_dither.setChecked(s.dithering)
         self.f_procedure.setCurrentIndex(STRATEGIES.index(s.strategy))
+        if self.f_grid.findData(s.extent) < 0:          # a grid from older settings
+            self.f_grid.addItem(EXTENT_NAMES.get(s.extent, s.extent) + "  (older settings)",
+                                s.extent)
         self.f_grid.setCurrentIndex(max(0, self.f_grid.findData(s.extent)))
         self.f_fix_colour.setCurrentText(s.fixation_colour)
         self.f_fix_mon.setCurrentText(next((k for k, v in FIX_CHOICES.items()
@@ -1648,7 +1651,7 @@ class SpecvisWindow(QMainWindow):
             iti_ms=(self.f_iti_c.value(), self.f_iti_c.value() + self.f_iti_r.value()),
             background_cd_m2=self.f_bg.value(), dithering=self.f_dither.isChecked(),
             strategy=STRATEGIES[self.f_procedure.currentIndex()],
-            extent=self.f_grid.currentData() or H24_2,
+            extent=self.f_grid.currentData() or APP_EXTENTS[0],
             fixation_colour=self.f_fix_colour.currentText(),
             fixation_monitoring=FIX_CHOICES.get(self.f_fix_mon.currentText(), FIX_BLIND_SPOT),
             answer_key=self.f_key_answer.currentText(), pause_key=self.f_key_pause.currentText(),

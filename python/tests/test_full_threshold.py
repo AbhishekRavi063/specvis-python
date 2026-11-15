@@ -209,10 +209,10 @@ with tempfile.TemporaryDirectory() as tmp:
             "summary.csv names the method; no 'nan' for the missing ZEST SD")
 
 print("6. the Humphrey 24-2 grid (the default)")
-require(PerimetrySettings().extent == H24_2_15 and PerimetrySettings().screen_width_mm == 544
+require(PerimetrySettings().extent == H24_2_CENTRAL and PerimetrySettings().screen_width_mm == 544
         and PerimetrySettings().screen_height_mm == 303
         and PerimetrySettings().viewing_distance_mm == 510,
-        "defaults: the lab setup (BenQ 544 x 303 mm, 51 cm, the 24-2 within 15 deg)")
+        "defaults: the lab setup (BenQ 544 x 303 mm, 51 cm, the 42-point 24-2)")
 for eye, sign in (("R", 1), ("L", -1)):
     kept, dropped = grid_points(PerimetrySettings(eye=eye, extent=H24_2))
     require(len(kept) == 52 and sorted(dropped) == sorted([(sign * 15, -3), (sign * 15, 3)]),
@@ -284,8 +284,8 @@ require(fit_problem(PerimetrySettings(extent=H24_2_CENTRAL, screen_width_mm=W245
 require(fit_problem(PerimetrySettings(extent=FULL, screen_width_mm=W245,
                                       viewing_distance_mm=600), 1920, 1080) is None,
         "the Aflah grid fits the same screen at 60 cm")
-require(all(e in EXTENT_NAMES for e in EXTENTS) and "42 spots" in EXTENT_NAMES[H24_2_CENTRAL]
-        and "68 spots" in EXTENT_NAMES[FULL], "the app names each grid with its number of spots")
+require(all(e in EXTENT_NAMES for e in EXTENTS) and "42 points" in EXTENT_NAMES[H24_2_CENTRAL],
+        "every grid has a name; the study grid says its number of points")
 o, _ = run(right_hemianopia, 23, settings_overrides=dict(LAB, extent=H24_2_CENTRAL))
 cats = collections.Counter(categorise(o, p) for p in o.points)
 require(o.valid and len(o.points) == 42 and abs(cats["blind"] - 19) <= 1,

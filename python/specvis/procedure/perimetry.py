@@ -98,11 +98,14 @@ H24_2_CENTRAL = "24-2 central"
 #: points left out -> 34 tested. Fits the 24.5" BenQ at 50-52.8 cm (the Tobii: 50-80 cm).
 H24_2_15 = "24-2 within 15"
 EXTENTS = (H24_2_15, H24_2, H24_2_CENTRAL, FULL, CENTRAL)
+#: The grids offered in the app (15 Nov: only the study grid, so nobody picks another by
+#: mistake). The others stay in the code so older sessions and settings still load.
+APP_EXTENTS = (H24_2_CENTRAL,)
 #: What the grid choices are called in the app, so they can be compared at a glance.
 EXTENT_NAMES = {
     H24_2_15: "24-2 within +/-15 deg: 34 spots, 6 deg apart, equal on all sides (50-52.8 cm)",
     H24_2: "24-2: 52 spots, 6 deg apart (needs ~33-37 cm; too close for the eye tracker)",
-    H24_2_CENTRAL: "24-2 without top/bottom rows: 42 spots, 6 deg apart (50-53 cm)",
+    H24_2_CENTRAL: "24-2: 42 points, 6 deg apart, without the top/bottom rows (51 cm)",
     FULL: "Aflah grid: 68 spots, 4 x 6 deg apart (50-60 cm)",
     CENTRAL: "Aflah grid, central: 46 spots (+/-13 deg)",
 }
@@ -138,13 +141,13 @@ class PerimetrySettings:
     #: The lab setup (BenQ 24.5", Tobii Pro Fusion 50-80 cm): the 24-2 without its top/bottom
     #: rows at 52 cm. H24_2 = the full 24-2 (52 points, ~33-37 cm); FULL = Aflah's +/-21 x +/-13
     #: (68 points, 50-60 cm); CENTRAL = +/-13 x +/-13
-    extent: str = H24_2_15
+    extent: str = H24_2_CENTRAL
     pilot_mode: bool = True               # no starting guesses: clean data for the table
     strategy: str = FULL_THRESHOLD        # the team's choice (2026-11-13): no normal table
 
     # Screen, measured
     screen_width_mm: float = 544.0        # the lab BenQ 24.5": 544 x 303 mm picture area
-    viewing_distance_mm: float = 510.0    # in the eye tracker's 50-80 cm; the +/-15 deg grid
+    viewing_distance_mm: float = 510.0    # in the eye tracker's 50-80 cm; the study grid
                                           # fits up to 52.8 cm on the BenQ
     #: The screen's height as measured or reported (BenQ: 303 mm). Used, when smaller than
     #: width x pixel ratio, for the "does it fit" check (the safe side); spots are placed

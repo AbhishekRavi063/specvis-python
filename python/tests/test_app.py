@@ -73,6 +73,7 @@ perimetry_dir = root / "output" / "perimetry"
 participants_file = root / "output" / "participants.json"
 presets_dir = root / "presets"
 shutil.copytree(store.PRESETS_DIR, presets_dir)
+shutil.copy(pathlib.Path(__file__).parent / "fixtures" / "0_macbook_practice.json", presets_dir)
 
 # An old session from before the app (participant not registered), which must appear.
 old_settings = settings_from_dict(dict(participant_id="OLD01", eye="R"))
@@ -96,14 +97,14 @@ sessions = store.list_sessions(perimetry_dir)
 everyone = [p.id for p in store.all_participants(people, sessions)]
 require(everyone == ["OLD01", "PILOT02"], f"old session's participant is listed: {everyone}")
 presets = store.list_presets(presets_dir)
-require(len(presets) == 5 and presets[0].settings["viewing_distance_mm"] == 350.0,
-        f"five shared presets: {[p.name for p in presets]}")
-require(all(p.settings.get("strategy") == "full_threshold" for p in presets)
-        and [(p.settings["extent"], p.settings["viewing_distance_mm"]) for p in presets[1:]]
-        == [("24-2", 330.0), ("24-2 central", 520.0), ("full", 550.0), ("24-2 within 15", 510.0)]
-        and all(p.settings.get("fixation_monitoring") == "eye tracker" for p in presets[2:]),
-        "staircase presets: 24-2 at 33 cm (blind-spot check); the two eye-tracker grids at "
-        "52 and 55 cm, for comparing them")
+lab = [p for p in store.list_presets(store.PRESETS_DIR)]
+require(len(lab) == 2 and all(p.settings["extent"] == "24-2 central"
+                              and p.settings["viewing_distance_mm"] == 510.0
+                              and p.settings["strategy"] == "full_threshold" for p in lab)
+        and [p.settings["fixation_monitoring"] for p in lab] == ["eye tracker", "blind spot"],
+        f"two app presets, both the 42-point 24-2 at 51 cm: {[p.name for p in lab]}")
+require(len(presets) == 3 and presets[0].settings["viewing_distance_mm"] == 350.0,
+        "the tests add their own laptop practice preset")
 
 print("2. the window")
 win = MainWindow(perimetry_dir, participants_file, presets_dir, perimetry_dir / "prior_table.csv")
@@ -136,8 +137,12 @@ win.eye_box.setCurrentIndex(0)
 win.sf.setValue(2.0)
 require(win.settings.spatial_frequency_cpd == 2.0, "stimulus page reaches the settings")
 win.sf.setValue(4.0)
-win.extent_box.setCurrentIndex(win.extent_box.findData("central"))
-require(win.settings.extent == "central", "procedure page reaches the settings")
+require(win.extent_box.itemData(0) == "24-2 central",
+        "the grid list offers the study grid first")
+win.apply_settings_values({"extent": "central"})
+require(win.settings.extent == "central" and win.extent_box.currentData() == "central"
+        and "older settings" in win.extent_box.currentText(),
+        "older settings with another grid still load, marked as older")
 win.sd_stop.setValue(0.20)
 require(abs(win.settings.zest.sd_stop - 0.20) < 1e-9, "the stopping rule reaches ZEST")
 for i in range(5):
@@ -172,7 +177,8 @@ def fake_launch(mode, job_path, on_done):
     on_done(0)
 
 
-win.apply_settings_values({"strategy": "zest", "pilot_mode": True})   # table people
+win.apply_settings_values({"strategy": "zest", "pilot_mode": True,   # table people
+                           "fixation_monitoring": "blind spot"})     # no tracker in tests
 require(win.settings.strategy == "zest", "ZEST (full) chosen for the table people")
 win._launch = fake_launch
 win.show_results = lambda info: shown.append(info)

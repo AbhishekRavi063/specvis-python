@@ -70,7 +70,10 @@ QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Y
 root = pathlib.Path(tempfile.mkdtemp(prefix="refrem_specvis_ui_"))
 pdir = root / "output" / "perimetry"
 pdir.mkdir(parents=True)
-win = SpecvisWindow(pdir, root / "output" / "participants.json", store.PRESETS_DIR,
+PRESETS = root / "presets"
+shutil.copytree(store.PRESETS_DIR, PRESETS)
+shutil.copy(pathlib.Path(__file__).parent / "fixtures" / "0_macbook_practice.json", PRESETS)
+win = SpecvisWindow(pdir, root / "output" / "participants.json", PRESETS,
                     pdir / "prior_table.csv", root / "calibration" / "scales.json")
 win.monitor_pixels = lambda: (3024, 1964)
 
@@ -83,7 +86,7 @@ win.people.add(store.Participant("PILOT02", first_name="", group="pilot", age="2
 win.patient = win.people.get("PILOT02")
 win._show_patient()
 require(win.f_patient_id.text() == "PILOT02", "patient shown in the ID field")
-win.apply_preset(1)                                     # MacBook practice
+win.apply_preset(1)                                     # MacBook practice (test fixture)
 require(win.f_settings.text().startswith("MacBook"), "preset name shown in Settings")
 require(win.problems() == [], f"ready to start: {win.problems()}")
 
@@ -188,7 +191,7 @@ require(pr.table.rowCount() == 1 and (pdir / "_deleted").exists() and
 
 print("6. remembered next time")
 win._save_last()
-again = SpecvisWindow(pdir, root / "output" / "participants.json", store.PRESETS_DIR,
+again = SpecvisWindow(pdir, root / "output" / "participants.json", PRESETS,
                       pdir / "prior_table.csv", root / "calibration" / "scales.json")
 require(again.patient and again.patient.id == "PILOT02" and again.settings.eye == "L",
         "patient and settings come back")

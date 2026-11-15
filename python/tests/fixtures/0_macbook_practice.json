@@ -1,6 +1,6 @@
 {
-  "name": "MacBook 14\" - practice",
-  "description": "Practice on a 14-inch MacBook Pro at 35 cm. The 24-2 does not fit this screen, so the older 68-point grid is used here; results are not for the study. Full Threshold 4-2 staircase (OPI), seeds at the middle of the dB range; assumed screen unless a ColorCAL scale is chosen.",
+  "name": "MacBook 14\" - practice (tests only)",
+  "description": "For the automated tests: a 14-inch MacBook at 35 cm with the Aflah grid. Not shipped as an app preset.",
   "settings": {
     "screen_width_mm": 302.0,
     "viewing_distance_mm": 350.0,

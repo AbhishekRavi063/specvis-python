@@ -1,0 +1,26 @@
+{
+  "name": "Lab: 24-2 (42 points), no eye tracker (blind-spot check), 51 cm",
+  "description": "Same grid and distance, for when the eye tracker is not available: fixation is checked with patches at each person's own blind spot (found at the start). Not reliable for the eye whose blind spot falls in a blind half of the field.",
+  "settings": {
+    "screen_width_mm": 544.0,
+    "viewing_distance_mm": 510.0,
+    "extent": "24-2 central",
+    "pilot_mode": true,
+    "strategy": "full_threshold",
+    "background_cd_m2": 10.0,
+    "dithering": true,
+    "fixation_ms": 0.0,
+    "iti_ms": [
+      300.0,
+      600.0
+    ],
+    "response_window_ms": 1200.0,
+    "adaptive_window": true,
+    "p_blank": 0.05,
+    "p_high": 0.05,
+    "p_blind_spot": 0.05,
+    "fixation_monitoring": "blind spot",
+    "screen_height_mm": 303.0,
+    "eye_distance_tolerance_mm": 10.0
+  }
+}
