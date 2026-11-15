@@ -289,6 +289,29 @@ require(fit_problem(PerimetrySettings(extent=FULL, screen_width_mm=W245,
         "the Aflah grid fits the same screen at 60 cm")
 require(all(e in EXTENT_NAMES for e in EXTENTS) and "42 points" in EXTENT_NAMES[H24_2_CENTRAL],
         "every grid has a name; the study grid says its number of points")
+from specvis.procedure.perimetry import GRID_5, APP_EXTENTS  # noqa: E402
+for eye in ("R", "L"):
+    kept5, dropped5 = grid_points(PerimetrySettings(eye=eye, extent=GRID_5))
+    t = 1 if eye == "R" else -1
+    require(len(kept5) == 56 and sorted(dropped5) == sorted([(t * 12.5, -2.5), (t * 12.5, 2.5),
+                                                            (t * 17.5, -2.5), (t * 17.5, 2.5)])
+            and all(abs(x) % 5 == 2.5 and abs(y) % 5 == 2.5 for x, y in kept5)
+            and max(abs(y) for _, y in kept5) == 12.5 and max(abs(x) for x, _ in kept5) == 22.5,
+            f"5-deg grid ({eye} eye): 56 points 5 deg apart, 2.5 off the midlines; the 4 in the "
+            f"blind spot left out {dropped5}")
+s5 = PerimetrySettings(extent=GRID_5, screen_width_mm=W245, screen_height_mm=305.0,
+                       viewing_distance_mm=600.0)
+require(set(seeds_for(s5)) == {(-7.5, 7.5), (7.5, 7.5), (-7.5, -7.5), (7.5, -7.5)}
+        and fit_problem(s5, 1920, 1080) is None
+        and fit_problem(PerimetrySettings(**{**s5.__dict__, "viewing_distance_mm": 640.0}),
+                        1920, 1080) is not None
+        and GRID_5 in APP_EXTENTS,
+        "5-deg grid: seeds at (+/-7.5, +/-7.5); fits at 60 cm, not at 64 cm; offered in the app")
+o5, _ = run(right_hemianopia, 23, settings_overrides=dict(LAB, extent=GRID_5, screen_width_mm=W245,
+                                                            viewing_distance_mm=600.0,
+                                                            screen_height_mm=305.0))
+require(len(o5.points) == 56 and all(p.zest.finished() for p in o5.points),
+        f"a hemianopia run on the 5-deg grid completes: {len(o5.points)} points, all finished")
 o, _ = run(right_hemianopia, 23, settings_overrides=dict(LAB, extent=H24_2_CENTRAL))
 cats = collections.Counter(categorise(o, p) for p in o.points)
 require(o.valid and len(o.points) == 42 and abs(cats["blind"] - 19) <= 1,

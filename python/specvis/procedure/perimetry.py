@@ -98,15 +98,30 @@ H24_2_CENTRAL = "24-2 central"
 #: apart everywhere and equal on all sides (Padmini, 14 Nov). 36 points; the 2 blind-spot
 #: points left out -> 34 tested. Fits the 24.5" BenQ at 50-52.8 cm (the Tobii: 50-80 cm).
 H24_2_15 = "24-2 within 15"
-EXTENTS = (H24_2_15, H24_2, H24_2_CENTRAL, FULL, CENTRAL)
+#: A 5-deg grid (15 Nov, our own; not a clinical grid): 5 deg apart everywhere, 2.5 deg
+#: off both midlines (like the 24-2's 3 deg), out to 22.5 deg across and 12.5 deg up/down.
+#: 60 positions; those whose patch overlaps the blind spot are left out (4) -> 56 tested.
+#: Made for the Tobii Pro Fusion at 55-62 cm on the 24.5" BenQ (it does not track
+#: properly at 50-52 cm), with the + in the centre.
+GRID_5 = "5 deg grid"
+GRID_5_X = (2.5, 7.5, 12.5, 17.5, 22.5)
+GRID_5_Y = (2.5, 7.5, 12.5)
+GRID_5_SEEDS = ((-7.5, 7.5), (7.5, 7.5), (-7.5, -7.5), (7.5, -7.5))
+#: The physiological blind spot's usual size, for leaving out grid points: about 5.5 deg
+#: wide and 7.5 deg high (textbook average; its centre is set by blind_spot_temporal_deg /
+#: blind_spot_below_deg). A point is left out when its patch centre is within this box
+#: widened by 0.5 deg.
+BLIND_SPOT_HALF_W, BLIND_SPOT_HALF_H, BLIND_SPOT_MARGIN = 2.75, 3.75, 0.5
+EXTENTS = (H24_2_15, H24_2, H24_2_CENTRAL, GRID_5, FULL, CENTRAL)
 #: The grids offered in the app (15 Nov: only the study grid, so nobody picks another by
 #: mistake). The others stay in the code so older sessions and settings still load.
-APP_EXTENTS = (H24_2_CENTRAL,)
+APP_EXTENTS = (H24_2_CENTRAL, GRID_5)
 #: What the grid choices are called in the app, so they can be compared at a glance.
 EXTENT_NAMES = {
     H24_2_15: "24-2 within +/-15 deg: 34 spots, 6 deg apart, equal on all sides (50-52.8 cm)",
     H24_2: "24-2: 52 spots, 6 deg apart (needs ~33-37 cm; too close for the eye tracker)",
     H24_2_CENTRAL: "24-2: 42 points, 6 deg apart, without the top/bottom rows (51 cm)",
+    GRID_5: "5 deg grid: 56 points, 5 deg apart everywhere (up to 62 cm, eye tracker)",
     FULL: "Aflah grid: 68 spots, 4 x 6 deg apart (50-60 cm)",
     CENTRAL: "Aflah grid, central: 46 spots (+/-13 deg)",
 }
@@ -235,6 +250,14 @@ class PerimetrySettings:
     fixation_tolerance_deg: float = 2.5   # the eye must stay within this of the +
     fixation_hold_ms: float = 200.0       # held this long before a patch is shown
     fixation_wait_ms: float = 5000.0      # then a "look at the +" reminder
+    #: Forgiveness (our suggestions, to tune on the lab PC; patients find it hard to hold
+    #: the + exactly). A tracker gap up to dropout_ms keeps the last on/off state (the lab
+    #: PC fix, 15 Nov); gaze off the + for no longer than off_grace_ms (noise, a flick of
+    #: the eye) does not count as off; and a patch is a fixation break only when more than
+    #: break_max_out_frac of its valid gaze samples are off the + (0 = any one sample).
+    fixation_dropout_ms: float = 100.0
+    fixation_off_grace_ms: float = 0.0
+    fixation_break_max_out_frac: float = 0.0
     #: Feedback to the person (our addition; Sanchez-Lopez et al. gave constant feedback
     #: on fixation): the + turns red while the eye is off it, and after a trial thrown
     #: away for an eye movement "Keep looking at the +" shows for a moment.
@@ -381,6 +404,8 @@ def seeds_for(settings: PerimetrySettings) -> Tuple[Tuple[float, float], ...]:
         return own
     if settings.extent in (H24_2, H24_2_CENTRAL, H24_2_15):
         return tuple((float(x), float(y)) for x, y in H24_2_SEEDS)
+    if settings.extent == GRID_5:
+        return GRID_5_SEEDS
     return own
 
 
@@ -414,6 +439,16 @@ def grid_points(settings: PerimetrySettings) -> Tuple[List[Tuple[int, int]],
     blind spot (temporal 12-18 deg, 3 below to 1 above), where every eye is blind;
     they are checked by the blind-spot catch trials instead.
     """
+    if settings.extent == GRID_5:
+        bx, by = settings.temporal_sign * settings.blind_spot_temporal_deg, -settings.blind_spot_below_deg
+        pts = sorted(((sx * x, sy * y) for x in GRID_5_X for y in GRID_5_Y
+                      for sx in (-1, 1) for sy in (-1, 1)), key=lambda p: (math.hypot(*p), p))
+        kept, dropped = [], []
+        for x, y in pts:
+            in_spot = (abs(x - bx) <= BLIND_SPOT_HALF_W + BLIND_SPOT_MARGIN
+                       and abs(y - by) <= BLIND_SPOT_HALF_H + BLIND_SPOT_MARGIN)
+            (dropped if in_spot else kept).append((x, y))
+        return kept, dropped
     if settings.extent in (H24_2, H24_2_CENTRAL, H24_2_15):
         central = settings.extent != H24_2
         rows = H24_2_15_ROWS if settings.extent == H24_2_15 else H24_2_ROWS
@@ -781,6 +816,7 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                              settings.response_window_ms))
 
     POLL_MS = 16.0
+    BOX_EDGE = 0.15                 # our choice: the eyes kept off the outer 15 % of the box
 
     def fixation_colour(colour: str) -> None:
         """The + in red while the eye is off it (feedback on); back to normal on it."""
@@ -798,17 +834,24 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         # last valid state; only gaze seen outside the tolerance, or lost for longer, is "off".
         # A trial that starts inside a gap is "not known yet", not "off": no red + until
         # the gap is longer than DROPOUT_MS (but no hold time is counted either).
-        DROPOUT_MS = 100.0
-        last_on, missing = None, 0.0
+        DROPOUT_MS = settings.fixation_dropout_ms
+        last_on, missing, off_for = None, 0.0, 0.0
         while True:
             g = monitor.current()
             if g is not None:
-                last_on, missing = math.hypot(*g) <= settings.fixation_tolerance_deg, 0.0
-                on = last_on
+                missing = 0.0
+                if math.hypot(*g) <= settings.fixation_tolerance_deg:
+                    last_on, off_for = True, 0.0
+                else:
+                    off_for += POLL_MS
+                    if off_for > settings.fixation_off_grace_ms:
+                        last_on = False
+                on = bool(last_on)
             else:
                 missing += POLL_MS
                 on = bool(last_on) and missing <= DROPOUT_MS
-            unknown = last_on is None and missing <= DROPOUT_MS
+            unknown = (last_on is None and missing <= DROPOUT_MS
+                       and off_for <= settings.fixation_off_grace_ms)
             fixation_colour(settings.fixation_colour if on or unknown
                             else settings.fixation_off_colour)
             if on:
@@ -1036,6 +1079,10 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         if not da:
             return
         gaze_check["tracker_display_area"] = da
+        if hasattr(monitor, "set_screen_plane"):
+            # From now on the eye's distance is measured square on to the screen, not to
+            # the (tilted) tracker, which read ~4-5 cm more on the lab PC.
+            monitor.set_screen_plane(da)
         dw = da["width_mm"] - settings.screen_width_mm
         dh = da["height_mm"] - settings.screen_height_mm if settings.screen_height_mm > 0 else 0
         tol = settings.display_area_tolerance_mm
@@ -1084,37 +1131,63 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             return (cx + float(v @ plane[1]) * scale, cy - float(v @ plane[2]) * scale)
 
         last_d = None
+        last_good = False
         while True:
             head = monitor.head_position() or {}
             d = head.get("distance_mm")
             marks = [Mark((cx, cy), ring, "", "grey")]
-            good = d is not None and abs(d - set_mm) <= tol
+            dist_ok = d is not None and abs(d - set_mm) <= tol
+            # Lab report 15 Nov: green must also mean "both eyes inside the circle", and
+            # (our addition) inside the tracker's track box, not at its edge.
+            placed = []
             for side in ("left", "right"):
                 o = head.get(side)
-                if o is None:
-                    continue
+                if o is not None:
+                    placed.append((side, eye_px(o), o))
+            inside = bool(placed) and all(
+                math.hypot(px - cx, py - cy) <= ring for _, (px, py), _ in placed)
+            in_box = all(BOX_EDGE <= c <= 1 - BOX_EDGE
+                         for s_ in ("left_box", "right_box") if head.get(s_)
+                         for c in head[s_][:2])
+            good = dist_ok and inside and in_box
+            for side, pos, o in placed:
                 r = max(8.0, 0.22 * ring * set_mm / max(o[2], 1.0))
-                marks.append(Mark(eye_px(o), r,
-                                  "L" if side == "left" else "R",
+                marks.append(Mark(pos, r, "L" if side == "left" else "R",
                                   "lightgreen" if good else "orange"))
             if d is None:
                 line = "Eyes not found: sit with the chin on the chin rest, look at the screen."
-            elif good:
-                line = f"Distance {d / 10:.1f} cm  (set {set_mm / 10:.1f} cm)  -  good"
             else:
-                line = (f"Distance {d / 10:.1f} cm  (set {set_mm / 10:.1f} cm)  -  move "
-                        f"{'closer' if d > set_mm else 'back'} by {abs(d - set_mm) / 10:.1f} cm")
+                line = (f"Distance {d / 10:.1f} cm  (set {set_mm / 10:.1f} cm)  -  " +
+                        ("good" if dist_ok else
+                         f"move {'closer' if d > set_mm else 'back'} by "
+                         f"{abs(d - set_mm) / 10:.1f} cm"))
+                if placed and not inside:
+                    mx = sum(p[1][0] for p in placed) / len(placed) - cx
+                    my = sum(p[1][1] for p in placed) / len(placed) - cy
+                    if abs(my) >= abs(mx):
+                        line += ("\nEyes too high: lower the chin rest" if my < 0 else
+                                 "\nEyes too low: raise the chin rest")
+                    else:
+                        line += ("\nEyes too far right: move the head to the left" if mx > 0
+                                 else "\nEyes too far left: move the head to the right")
+                elif not in_box:
+                    line += "\nEyes near the edge of the tracker's view: centre the head"
+                if good:
+                    line += "\nPosition good"
             key = backend.show_status(
                 "Position the head: both eyes inside the circle.\n" + line +
                 f"\n\n{seen_key.upper()} = continue   {abort_key.upper()} = stop",
                 marks, 100.0, keys=[seen_key, abort_key])
             last_d = d if d is not None else last_d
+            last_good = good
             if key == abort_key:
                 raise Aborted
             if key == seen_key:
                 gaze_check["eye_distance_mm"] = None if last_d is None else round(last_d, 1)
                 if last_d is not None and abs(last_d - set_mm) > tol:
                     gaze_check["eye_distance_accepted_off_by_mm"] = round(last_d - set_mm, 1)
+                if not last_good:                  # the operator went on anyway
+                    gaze_check["head_position_accepted_off"] = True
                 return
 
     def check_eye_distance() -> None:
@@ -1204,12 +1277,18 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         fixated = True
         if watching:
             fixated, worst, frac = judge_patch(monitor.between(t_on, t_off),
-                                               settings.fixation_tolerance_deg)
+                                               settings.fixation_tolerance_deg,
+                                               max_out_frac=settings.fixation_break_max_out_frac)
             counts["gaze_checked"] += 1
-            counts["fixation_breaks"] += int(not fixated)
+            # The eye not seen for most of the patch is a blink, not a look away.
+            counts["fixation_breaks"] += int(not fixated and frac >= 0.5)
             gaze_info.update(gaze_max_deg="" if math.isnan(worst) else round(worst, 2),
                              gaze_valid_pct=round(100 * frac))
-            if not fixated and settings.fixation_feedback:
+            # A blink: the patch is repeated, but the person is not told off for it.
+            blink = not fixated and frac < 0.5
+            if blink:
+                counts["blinks"] = counts.get("blinks", 0) + 1
+            if not fixated and not blink and settings.fixation_feedback:
                 # Right away, so the person knows; the next patch waits for the eye anyway.
                 fixation_colour(settings.fixation_off_colour)
                 backend.show_message("Keep looking at the  +", 1000.0, fixation=fixation)

@@ -251,6 +251,81 @@ class Blinky(Tracker):
 o, colours = gappy_session(Blinky())
 require("red" in colours, "gaze lost for longer than 100 ms still counts as off (the + turns red)")
 
+
+print("5d. gentler fixation check (5-deg preset), blinks, positioning, true distance")
+from specvis.procedure.fixation import distance_to_screen, judge_patch, screen_plane  # noqa: E402
+
+
+class Flicky(Tracker):
+    """On the +, but every 20th sample 5 deg off (noise / a quick flick)."""
+    n = 0
+
+    def _read(self):
+        Flicky.n += 1
+        return (5.0, 0.0) if Flicky.n % 20 == 0 else (0.0, 0.0)
+
+
+def flick_session(**over):
+    s = PerimetrySettings(participant_id="FL", strategy=FULL_THRESHOLD, extent=H24_2_CENTRAL,
+                          screen_width_mm=302.0, viewing_distance_mm=334.0,
+                          screen_height_mm=302.0 * 1964 / 3024, fixation_monitoring=FIX_TRACKER,
+                          **over)
+    spy = ColourSpy(healthy, random.Random(5), width_mm=302.0, dist_mm=334.0)
+    spy.open(W, H, 0.5)
+    run_perimetry(s, spy, rng=random.Random(5), show_instructions=False,
+                  fixation_monitor=Flicky())
+    return getattr(spy, "colours", [])
+
+
+require("red" in flick_session(), "strict (defaults): a single 16-ms flick turns the + red")
+require("red" not in flick_session(fixation_off_grace_ms=150.0, fixation_break_max_out_frac=0.5),
+        "gentle (150 ms grace): short flicks are ignored, the + stays white")
+on, off = (0.5, 0.0), (4.0, 0.0)
+require(judge_patch([on] * 9 + [off], 3.0)[0] is False
+        and judge_patch([on] * 9 + [off], 3.0, max_out_frac=0.25)[0] is True
+        and judge_patch([on] * 6 + [off] * 4, 3.0, max_out_frac=0.25)[0] is False,
+        "patch judged: 1 sample in 10 off is a break only in strict mode; 4 in 10 always")
+
+
+class Blinker(Tracker):
+    def patch_shown(self, t0, t1):
+        self.look = (0.0, 0.0)
+
+
+blinky = ScriptedMonitor(lambda i: None if i % 7 == 3 else (0.0, 0.0))
+obs = Observer(healthy, random.Random(6), width_mm=302.0, dist_mm=334.0)
+obs.open(W, H, 0.5)
+o = run_perimetry(PerimetrySettings(participant_id="BL", strategy=FULL_THRESHOLD,
+                                    extent=H24_2_CENTRAL, screen_width_mm=302.0,
+                                    viewing_distance_mm=334.0, fixation_monitoring=FIX_TRACKER),
+                  obs, rng=random.Random(6), show_instructions=False, fixation_monitor=blinky)
+require(o.counts.get("blinks", 0) > 0 and o.counts["fixation_breaks"] == 0
+        and not getattr(obs, "messages", []),
+        f"blinks during a patch ({o.counts.get('blinks')}): repeated, not counted as looking "
+        "away, no 'Keep looking' message")
+
+obs = Observer(healthy, random.Random(3), width_mm=302.0, dist_mm=334.0)
+obs.open(W, H, 0.5)
+high = (eye(-32.0)[0], eye(-32.0)[1] + 100 * math.cos(t20), eye(-32.0)[2] + 100 * math.sin(t20))
+high_r = (eye(32.0)[0], eye(32.0)[1] + 100 * math.cos(t20), eye(32.0)[2] + 100 * math.sin(t20))
+o = run_perimetry(PerimetrySettings(participant_id="POS3", strategy=FULL_THRESHOLD,
+                                    extent=H24_2_CENTRAL, screen_width_mm=302.0,
+                                    viewing_distance_mm=334.0, fixation_monitoring=FIX_TRACKER),
+                  obs, rng=random.Random(3), show_instructions=True,
+                  fixation_monitor=Tracker(distance=334.0, area=(542.3, 305.0), corners=lab,
+                                           eyes=(high, high_r)))
+text, marks = obs.statuses[0]
+require("too high" in text and "Position good" not in text
+        and all(m.colour == "orange" for m in marks if m.label)
+        and o.gaze_check.get("head_position_accepted_off") is True,
+        "eyes 10 cm above the screen centre: orange, 'lower the chin rest', and going on anyway "
+        "is recorded")
+plane = screen_plane(lab)
+require(abs(distance_to_screen(eye(0.0), plane) - 510.0) < 0.5
+        and abs(distance_to_screen(eye(0.0), None) - eye(0.0)[2]) < 1e-9
+        and eye(0.0)[2] - 510.0 > 10,
+        f"eye distance square on to the tilted screen: 510 mm (the tracker's z reads "
+        f"{eye(0.0)[2]:.0f})")
 sys.path.insert(0, str(HERE / "tools"))
 import tracker_display  # noqa: E402
 area = dict(top_left=[-265.4, 297.6, 97.7], top_right=[276.9, 297.6, 97.7],

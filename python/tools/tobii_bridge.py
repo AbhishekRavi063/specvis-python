@@ -109,6 +109,7 @@ def main() -> int:
                 send({"t": int(time.time() * 1e6), "l": [look[0], look[1], 1],
                       "r": [look[0], look[1], 1], "lz": dist[0], "rz": dist[0],
                       "lo": [-32.0, 170.0, dist[0]], "ro": [32.0, 170.0, dist[0]],
+                      "lb": [0.55, 0.5, 0.5], "rb": [0.45, 0.5, 0.5],
                       "model": "FAKE", "serial": "none"})
                 serve(fake_handle, 1 / 120)
         except KeyboardInterrupt:
@@ -155,10 +156,27 @@ def main() -> int:
             return None
         return [round(float(c), 1) for c in v]
 
+    def box(data, side):
+        """The eye's place in the track box (0-1 on each axis, 0.5 = the middle)."""
+        if not data.get(f"{side}_gaze_origin_validity"):
+            return None
+        v = data.get(f"{side}_gaze_origin_in_trackbox_coordinate_system")
+        if not v or any(math.isnan(c) for c in v):
+            return None
+        return [round(float(c), 3) for c in v]
+
+    def pupil(data, side):
+        if not data.get(f"{side}_pupil_validity"):
+            return None
+        p = data.get(f"{side}_pupil_diameter", float("nan"))
+        return None if math.isnan(p) else round(float(p), 2)
+
     def on_gaze(data):
         send({"t": data.get("system_time_stamp"), "l": point(data, "left"),
               "r": point(data, "right"), "lz": depth(data, "left"), "rz": depth(data, "right"),
               "lo": origin(data, "left"), "ro": origin(data, "right"),
+              "lb": box(data, "left"), "rb": box(data, "right"),
+              "lp": pupil(data, "left"), "rp": pupil(data, "right"),
               "model": model, "serial": serial})
 
     calib = tr.ScreenBasedCalibration(tracker)

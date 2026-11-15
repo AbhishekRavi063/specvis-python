@@ -24,7 +24,7 @@ HERE = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 
 from specvis.app import store  # noqa: E402
-from specvis.procedure.fixation import BRIDGE_PORT  # noqa: E402
+from specvis.procedure.fixation import BRIDGE_PORT, distance_to_screen, screen_plane  # noqa: E402
 from specvis.procedure.perimetry import (EXTENT_NAMES, EXTENTS, H24_2_CENTRAL,  # noqa: E402
                                          PerimetrySettings, fit_problem)
 
@@ -71,7 +71,8 @@ def bridge_display_area(port: int):
 
 
 def distance_line(zs, set_mm: float, tol_mm: float = 10.0) -> None:
-    """The eye's distance from the screen, as the tracker measures it."""
+    """The eye's distance from the screen (square on, when the tracker's display area
+    is known), as the tracker measures it."""
     if not zs:
         print("        eye distance: not measured (sit at the chin rest and look at the screen)")
         return
@@ -156,14 +157,14 @@ def main() -> int:
                    "close Tobii Pro Lab")
         else:
             t = trackers[0]
-            got, zs = [], []
+            got, origins = [], []
 
             def cb(d):
                 got.append(bool(d.get("right_gaze_point_validity")
                                 or d.get("left_gaze_point_validity")))
                 for s in ("right", "left"):
                     if d.get(f"{s}_gaze_origin_validity"):
-                        zs.append(float(d[f"{s}_gaze_origin_in_user_coordinate_system"][2]))
+                        origins.append(tuple(d[f"{s}_gaze_origin_in_user_coordinate_system"]))
                         break
             t.subscribe_to(tr.EYETRACKER_GAZE_DATA, cb, as_dictionary=True)
             time.sleep(2.0)
@@ -171,8 +172,11 @@ def main() -> int:
             report(len(got) > 0, f"{t.model} ({t.serial_number}): {len(got) / 2:.0f} samples/s, "
                    f"{sum(got)} with a valid eye (look at the screen to see valid ones)",
                    "no gaze data: check the tracker in Eye Tracker Manager")
-            distance_line(zs, args.distance_mm, args.tolerance_mm)
             da = t.get_display_area()
+            plane = screen_plane(dict(top_left=da.top_left, top_right=da.top_right,
+                                      bottom_left=da.bottom_left))
+            zs = [z for z in (distance_to_screen(o, plane) for o in origins) if z is not None]
+            distance_line(zs, args.distance_mm, args.tolerance_mm)
             display_line(dict(width_mm=da.width, height_mm=da.height), args.width_mm,
                          args.height_mm)
     else:
@@ -180,7 +184,7 @@ def main() -> int:
         try:
             sock.bind(("127.0.0.1", BRIDGE_PORT))
             sock.settimeout(0.2)
-            n, valid, model, zs = 0, 0, "", []
+            n, valid, model, zs, origins = 0, 0, "", [], []
             end = time.monotonic() + 2.0
             while time.monotonic() < end:
                 try:
@@ -193,11 +197,18 @@ def main() -> int:
                 z = msg.get("rz") if msg.get("rz") is not None else msg.get("lz")
                 if z is not None:
                     zs.append(float(z))
+                o = msg.get("ro") or msg.get("lo")
+                if o:
+                    origins.append(tuple(float(c) for c in o))
             report(n > 0, f"gaze from the bridge: {n / 2:.0f} samples/s, {valid} valid "
                    f"({model or '?'})",
                    "start it in another terminal: python/specvis.sh tracker-bridge")
+            area = bridge_display_area(BRIDGE_PORT + 1)
+            plane = screen_plane(area)
+            if plane is not None and origins:
+                zs = [z for z in (distance_to_screen(o, plane) for o in origins) if z is not None]
             distance_line(zs, args.distance_mm, args.tolerance_mm)
-            display_line(bridge_display_area(BRIDGE_PORT + 1), args.width_mm, args.height_mm)
+            display_line(area, args.width_mm, args.height_mm)
         except OSError as e:
             report(False, f"port {BRIDGE_PORT}", f"in use? close other ReFreM windows ({e})")
         finally:

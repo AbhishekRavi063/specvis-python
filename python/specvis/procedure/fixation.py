@@ -42,6 +42,38 @@ BRIDGE_PORT = 5555                             # tools/tobii_bridge.py -> the ap
 BRIDGE_CMD_PORT = BRIDGE_PORT + 1              # the app -> the bridge: calibration commands
 
 
+def screen_plane(area: Optional[dict]):
+    """(centre, right, up, normal) of the screen from a display area's corners, or None.
+    The normal points out of the screen, towards the person."""
+    try:
+        import numpy as np
+        tl, tr_, bl = (np.array(area[k], dtype=float)
+                       for k in ("top_left", "top_right", "bottom_left"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    right, up = tr_ - tl, tl - bl
+    if not (np.linalg.norm(right) > 0 and np.linalg.norm(up) > 0):
+        return None
+    right, up = right / np.linalg.norm(right), up / np.linalg.norm(up)
+    normal = np.cross(right, up)
+    if normal[2] < 0:                       # towards the person (+z in Tobii's UCS)
+        normal = -normal
+    return (bl + (tr_ - tl) / 2.0 + (tl - bl) / 2.0, right, up, normal)
+
+
+def distance_to_screen(origin, plane) -> Optional[float]:
+    """The eye's square-on distance from the screen plane (mm); with no plane, the
+    tracker's z (distance from the tracker, which reads about 4-5 cm more on the lab's
+    tilted tracker)."""
+    if origin is None:
+        return None
+    if plane is not None and not any(math.isnan(c) for c in origin[:3]):
+        import numpy as np
+        return float(abs((np.array(origin[:3], dtype=float) - plane[0]) @ plane[3]))
+    z = origin[2]
+    return None if math.isnan(z) else float(z)
+
+
 class FixationMonitor:
     """The interface the procedure uses. Subclasses fill :meth:`_read` or push samples."""
 
@@ -107,6 +139,12 @@ class FixationMonitor:
         """Where the tracker thinks the screen is: {"width_mm", "height_mm", corners}.
         None when there is no tracker to ask."""
         return None
+
+    def set_screen_plane(self, area: Optional[dict]) -> None:
+        """Tell the monitor where the screen is (the tracker's display area: corners in
+        mm, User Coordinate System), so the eye's distance is measured to the screen
+        plane, square on, rather than to the tracker. Ignored without corners."""
+        self._plane = screen_plane(area)
 
     def head_position(self) -> Optional[dict]:
         """For the positioning screen: {"left": (x, y, z) mm or None, "right": ...,
@@ -228,21 +266,27 @@ class TobiiMonitor(FixationMonitor):
         # the screen's bottom bezel, so this is the eye's distance from the screen plane.
         for s in (side, other):
             if data.get(f"{s}_gaze_origin_validity"):
-                z = data.get(f"{s}_gaze_origin_in_user_coordinate_system",
-                             (float("nan"),) * 3)[2]
-                if not math.isnan(z):
+                d = distance_to_screen(
+                    data.get(f"{s}_gaze_origin_in_user_coordinate_system",
+                             (float("nan"),) * 3), getattr(self, "_plane", None))
+                if d is not None:
                     with self._lock:
-                        self._depths.append((time.perf_counter(), float(z)))
+                        self._depths.append((time.perf_counter(), d))
                         if len(self._depths) > 2000:
                             del self._depths[:1000]
                     break
-        eyes = {}
+        eyes, boxes = {}, {}
         for s in ("left", "right"):
             o = data.get(f"{s}_gaze_origin_in_user_coordinate_system")
             eyes[s] = (None if not data.get(f"{s}_gaze_origin_validity") or not o
                        or any(math.isnan(c) for c in o) else tuple(float(c) for c in o))
+            # Where the eye is in the tracker's track box (0-1 on each axis; 0.5 = the
+            # middle), straight from the Tobii SDK.
+            b = data.get(f"{s}_gaze_origin_in_trackbox_coordinate_system")
+            boxes[s] = (None if eyes[s] is None or not b or any(math.isnan(c) for c in b)
+                        else tuple(float(c) for c in b))
         with self._lock:
-            self._eyes = (time.perf_counter(), eyes)
+            self._eyes = (time.perf_counter(), eyes, boxes)
         g: Gaze = None
         if data.get(f"{side}_gaze_point_validity"):
             fx, fy = data[f"{side}_gaze_point_on_display_area"]
@@ -252,15 +296,18 @@ class TobiiMonitor(FixationMonitor):
 
     def head_position(self) -> Optional[dict]:
         with self._lock:
-            stamp, eyes = getattr(self, "_eyes", (0.0, {}))
+            stamp, eyes, boxes = getattr(self, "_eyes", (0.0, {}, {}))
         if time.perf_counter() - stamp > 0.2:
-            eyes = {}
+            eyes, boxes = {}, {}
         return dict(left=eyes.get("left"), right=eyes.get("right"),
+                    left_box=boxes.get("left"), right_box=boxes.get("right"),
                     distance_mm=self.eye_distance_mm(0.3))
 
     def eye_distance_mm(self, window_s: float = 0.5) -> Optional[float]:
         """Median eye-to-screen distance over the last ``window_s`` seconds (mm), from the
-        tracker; the tested eye, or the other one when the tested eye is not seen."""
+        tracker; the tested eye, or the other one when the tested eye is not seen. Square
+        on to the screen once :meth:`set_screen_plane` has been given the display area;
+        before that, the distance from the tracker."""
         now = time.perf_counter()
         with self._lock:
             zs = [z for t, z in self._depths if now - t <= window_s]
@@ -390,6 +437,9 @@ class TobiiMonitor(FixationMonitor):
             data[f"{long}_gaze_origin_in_user_coordinate_system"] = (
                 tuple(float(c) for c in o) if o else
                 (float("nan"), float("nan"), float("nan") if z is None else float(z)))
+            b = msg.get(short + "b")
+            data[f"{long}_gaze_origin_in_trackbox_coordinate_system"] = (
+                tuple(float(c) for c in b) if b else (float("nan"),) * 3)
         self._on_gaze(data)
 
     def _listen(self) -> None:
@@ -424,15 +474,19 @@ def monitor_for(mode: str, eye: str) -> FixationMonitor:
     return NoMonitor()
 
 
-def judge_patch(gaze: Sequence[Gaze], tolerance_deg: float, min_valid: float = 0.5
-                ) -> Tuple[bool, float, float]:
+def judge_patch(gaze: Sequence[Gaze], tolerance_deg: float, min_valid: float = 0.5,
+                max_out_frac: float = 0.0) -> Tuple[bool, float, float]:
     """Was the eye on the + during a patch? Returns (ok, largest offset in degrees,
     fraction of valid samples). Too few valid samples (a blink) is not ok either: the
-    patch may have been missed with the eye shut."""
+    patch may have been missed with the eye shut. With ``max_out_frac`` > 0, up to that
+    share of the valid samples may be off the + (tracker noise, a brief flick) and the
+    patch still counts; 0 = every sample must be on it."""
     if not gaze:
         return False, float("nan"), 0.0
     valid = [g for g in gaze if g is not None]
     frac = len(valid) / len(gaze)
-    worst = max((math.hypot(*g) for g in valid), default=float("nan"))
-    ok = frac >= min_valid and not math.isnan(worst) and worst <= tolerance_deg
+    offsets = [math.hypot(*g) for g in valid]
+    worst = max(offsets, default=float("nan"))
+    out = sum(o > tolerance_deg for o in offsets) / len(offsets) if offsets else 1.0
+    ok = frac >= min_valid and bool(offsets) and out <= max_out_frac
     return ok, worst, frac

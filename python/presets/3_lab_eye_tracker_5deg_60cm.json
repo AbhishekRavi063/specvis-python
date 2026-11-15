@@ -1,0 +1,32 @@
+{
+  "name": "Lab: 5 deg grid (56 points), eye tracker, 60 cm",
+  "description": "For testing (15 Nov). BenQ 24.5\" (542.3 x 305 mm), chin rest so the eye is 60 cm from the screen (the Tobii Pro Fusion does not track properly at 50-52 cm; the grid fits up to 62 cm). Our 5 deg grid: 56 points, 5 deg apart everywhere, + in the centre. Full Threshold 4-2 staircase (OPI). Gentler fixation check (our suggestion, to tune): 3 deg window, short flicks and tracker gaps up to 150 ms ignored, a patch thrown away only if over a quarter of its gaze is off the +, blinks not scolded. Start python\\specvis.bat tracker-bridge first. Choose the ColorCAL scale \"Lab screen\".",
+  "settings": {
+    "screen_width_mm": 542.3,
+    "screen_height_mm": 305.0,
+    "viewing_distance_mm": 600.0,
+    "extent": "5 deg grid",
+    "pilot_mode": true,
+    "strategy": "full_threshold",
+    "background_cd_m2": 10.0,
+    "dithering": true,
+    "fixation_ms": 0.0,
+    "iti_ms": [
+      300.0,
+      600.0
+    ],
+    "response_window_ms": 1200.0,
+    "adaptive_window": true,
+    "p_blank": 0.05,
+    "p_high": 0.05,
+    "p_blind_spot": 0.05,
+    "fixation_monitoring": "eye tracker",
+    "eye_distance_tolerance_mm": 20.0,
+    "fixation_tolerance_deg": 3.0,
+    "fixation_hold_ms": 150.0,
+    "fixation_wait_ms": 8000.0,
+    "fixation_dropout_ms": 150.0,
+    "fixation_off_grace_ms": 150.0,
+    "fixation_break_max_out_frac": 0.25
+  }
+}
