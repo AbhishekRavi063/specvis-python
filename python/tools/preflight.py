@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Before a real session: is everything connected and set up?
 
-    python/specvis.sh preflight --width-mm 531 --distance-mm 330
+    python/specvis.sh preflight            (defaults: 542.3 x 305 mm, 510 mm)
 
 Checks, without showing any stimulus:
   1. the screens PsychoPy sees, and whether the grid fits at this width and distance;
@@ -25,7 +25,7 @@ sys.path.insert(0, str(HERE))
 
 from specvis.app import store  # noqa: E402
 from specvis.procedure.fixation import BRIDGE_PORT  # noqa: E402
-from specvis.procedure.perimetry import (EXTENT_NAMES, EXTENTS, H24_2_15,  # noqa: E402
+from specvis.procedure.perimetry import (EXTENT_NAMES, EXTENTS, H24_2_CENTRAL,  # noqa: E402
                                          PerimetrySettings, fit_problem)
 
 results = []
@@ -91,8 +91,8 @@ def main() -> int:
     ap.add_argument("--distance-mm", type=float, default=510.0, help="eye to screen")
     ap.add_argument("--height-mm", type=float, default=305.0,
                     help="screen height as measured / reported (0 = from the width)")
-    ap.add_argument("--grid", choices=EXTENTS, default=H24_2_15,
-                    help="the grid to check (default: the 24-2 within +/-15 deg)")
+    ap.add_argument("--grid", choices=EXTENTS, default=H24_2_CENTRAL,
+                    help="the grid to check (default: the study grid, 24-2 central)")
     ap.add_argument("--tolerance-mm", type=float, default=10.0,
                     help="eye distance allowed off the set distance (default 10 mm)")
     ap.add_argument("--screen", type=int, default=0)

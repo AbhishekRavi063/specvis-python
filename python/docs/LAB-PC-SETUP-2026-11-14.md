@@ -163,8 +163,8 @@ The Aflah grid and the 24-2 without its top/bottom rows stay available for compa
 
 - [ ] Record the monitor brightness setting used for this calibration
 - [ ] Confirm dynamic contrast, eco and overdrive were off, and the 30-minute warm-up
-- [ ] Preflight with the measured width (544 mm), e.g.
-      `python\specvis.bat preflight --width-mm 544 --distance-mm 520`
+- [ ] Preflight (defaults now 542.3 × 305 mm, 51 cm): `python\specvis.bat preflight`
+- [ ] Measure the tracker's gap and tilt, then `tracker-display --set --gap-mm … --tilt-deg …`
 - [ ] Decide whether to measure uniformity (`--uniformity`; the meter must be moved)
 - [ ] Confirm the photometer-tool fixes (`40a30d5`) on a real run
 - [ ] Team: the grid with the eye tracker (24-2 without its top/bottom rows, or the Aflah grid)
