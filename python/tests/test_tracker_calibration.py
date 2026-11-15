@@ -21,7 +21,7 @@ from specvis.procedure.fixation import (FIX_TRACKER, FixationMonitor,  # noqa: E
 from specvis.procedure.perimetry import (FULL_THRESHOLD, H24_2_CENTRAL,  # noqa: E402
                                          TRACKER_CAL_POINTS, PerimetrySettings, run_perimetry,
                                          write_outputs)
-from sim_observer import Observer, W, H, healthy  # noqa: E402
+from sim_observer import Observer, W, H, healthy, right_hemianopia  # noqa: E402
 
 ok = True
 
@@ -249,7 +249,44 @@ class Blinky(Tracker):
 
 
 o, colours = gappy_session(Blinky())
-require("red" in colours, "gaze lost for longer than 100 ms still counts as off (the + turns red)")
+require("red" not in colours and o.counts.get("blinks_between", 0) > 0,
+        "gaze lost for longer than 100 ms (a blink) restarts the hold but is not 'looking "
+        f"away': the + stays white ({o.counts.get('blinks_between')} blinks)")
+
+
+class Settle(Tracker):
+    """On the + for 60 samples, then lost for 15 (240 ms, a blink), again and again."""
+    n = 0
+
+    def _read(self):
+        Settle.n += 1
+        return None if Settle.n % 75 >= 60 else (0.0, 0.0)
+
+
+def polls_before_patches(settle_ms):
+    Settle.n = 0
+    t = Settle()
+    s = PerimetrySettings(participant_id="ST", strategy=FULL_THRESHOLD, extent=H24_2_CENTRAL,
+                          screen_width_mm=302.0, viewing_distance_mm=334.0,
+                          screen_height_mm=302.0 * 1964 / 3024, fixation_monitoring=FIX_TRACKER,
+                          post_blink_delay_ms=settle_ms)
+    spy = ColourSpy(healthy, random.Random(3), width_mm=302.0, dist_mm=334.0)
+    spy.open(W, H, 0.5)
+    out = run_perimetry(s, spy, rng=random.Random(3), show_instructions=False, fixation_monitor=t)
+    return Settle.n / max(1, out.counts["presentations"])
+
+
+a, b = polls_before_patches(0.0), polls_before_patches(300.0)
+require(b > a, f"after a blink the next patch waits longer with a 300 ms settle delay "
+               f"({a:.1f} -> {b:.1f} gaze polls per patch)")
+from specvis.procedure.fixation import FixationMonitor as _FM  # noqa: E402
+m = _FM()
+for t_, g_ in ((0.000, (0, 0)), (0.004, (0, 0)), (0.008, None), (0.012, None), (0.150, (0, 0)),
+               (0.154, None), (0.158, (0, 0)), (0.200, (0, 0))):
+    m._add(t_, g_)
+require(abs(m.longest_gap_ms(0.0, 0.2) - 146.0) < 0.5 and m.longest_gap_ms(0.16, 0.2) == 0.0,
+        f"longest gap in a patch: 146 ms (a blink) vs single lost samples "
+        f"({m.longest_gap_ms(0.0, 0.2):.0f} ms)")
 
 
 print("5d. gentler fixation check (5-deg preset), blinks, positioning, true distance")
@@ -326,6 +363,27 @@ require(abs(distance_to_screen(eye(0.0), plane) - 510.0) < 0.5
         and eye(0.0)[2] - 510.0 > 10,
         f"eye distance square on to the tilted screen: 510 mm (the tracker's z reads "
         f"{eye(0.0)[2]:.0f})")
+
+
+class AlwaysBlinky(ScriptedMonitor):
+    """Every patch has a 150-ms gap in the tracked eye."""
+    def longest_gap_ms(self, t0, t1):
+        return 150.0
+
+
+obs = Observer(right_hemianopia, random.Random(8), width_mm=302.0, dist_mm=334.0)
+obs.open(W, H, 0.5)
+o = run_perimetry(PerimetrySettings(participant_id="BG", strategy=FULL_THRESHOLD,
+                                    extent=H24_2_CENTRAL, screen_width_mm=302.0,
+                                    viewing_distance_mm=334.0, fixation_monitoring=FIX_TRACKER,
+                                    blink_min_ms=100.0),
+                  obs, rng=random.Random(8), show_instructions=False,
+                  fixation_monitor=AlwaysBlinky(lambda i: (0.0, 0.0)))
+notes = [r.get("note", "") for r in o.trial_rows]
+require(o.counts.get("blinks", 0) > 0 and any(str(n).startswith("BLINK") for n in notes)
+        and all(p.zest.finished() for p in o.points) and o.counts["fixation_breaks"] == 0,
+        f"a not-seen patch with a blink-long gap is repeated ({o.counts.get('blinks')} times, "
+        "'BLINK' in trials.csv), at most 3 times per point, so blind points still finish")
 sys.path.insert(0, str(HERE / "tools"))
 import tracker_display  # noqa: E402
 area = dict(top_left=[-265.4, 297.6, 97.7], top_right=[276.9, 297.6, 97.7],

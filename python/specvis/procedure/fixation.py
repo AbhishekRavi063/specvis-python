@@ -110,6 +110,27 @@ class FixationMonitor:
         with self._lock:
             return [g for t, g in self.samples if t0 <= t <= t1]
 
+    def longest_gap_ms(self, t0: float, t1: float) -> float:
+        """The longest stretch between t0 and t1 with no valid gaze (ms), from the last
+        valid sample before the gap (or t0) to the next valid one (or t1); 0 when no
+        sample was missing. A blink lasts roughly 100-400 ms; lost single samples a few ms."""
+        with self._lock:
+            pts = [(t, g) for t, g in self.samples if t0 <= t <= t1]
+        if not any(g is None for _, g in pts):
+            return 0.0
+        longest, gap_start, last_valid = 0.0, None, t0
+        for t, g in pts:
+            if g is None:
+                if gap_start is None:
+                    gap_start = last_valid
+            else:
+                if gap_start is not None:
+                    longest, gap_start = max(longest, t - gap_start), None
+                last_valid = t
+        if gap_start is not None:
+            longest = max(longest, t1 - gap_start)
+        return 1000.0 * longest
+
     def patch_shown(self, t0: float, t1: float) -> None:
         """Called after every patch with its start and end (time.perf_counter())."""
 

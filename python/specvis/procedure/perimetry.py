@@ -258,6 +258,14 @@ class PerimetrySettings:
     fixation_dropout_ms: float = 100.0
     fixation_off_grace_ms: float = 0.0
     fixation_break_max_out_frac: float = 0.0
+    #: Blinks (our suggestions). The eye not seen is never "looking away": no red +, no
+    #: fixation break. A gap in the tracked eye of at least blink_min_ms during a patch
+    #: that was not seen = the patch may have fallen in a blink: it is repeated (0 = only
+    #: when the eye was missing for most of the patch). After the eye comes back from a
+    #: gap longer than fixation_dropout_ms, the next patch waits post_blink_delay_ms more
+    #: (on top of the hold), so the lid and the eye settle first.
+    blink_min_ms: float = 0.0
+    post_blink_delay_ms: float = 0.0
     #: Feedback to the person (our addition; Sanchez-Lopez et al. gave constant feedback
     #: on fixation): the + turns red while the eye is off it, and after a trial thrown
     #: away for an eye movement "Keep looking at the +" shows for a moment.
@@ -834,11 +842,17 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         # last valid state; only gaze seen outside the tolerance, or lost for longer, is "off".
         # A trial that starts inside a gap is "not known yet", not "off": no red + until
         # the gap is longer than DROPOUT_MS (but no hold time is counted either).
+        # A gap longer than that (a blink, or the eye out of the tracker's view) is not
+        # "looking away" either: the + stays as it is, the hold starts again, and when the
+        # eye is back the patch waits post_blink_delay_ms more.
         DROPOUT_MS = settings.fixation_dropout_ms
-        last_on, missing, off_for = None, 0.0, 0.0
+        last_on, missing, off_for, settle = None, 0.0, 0.0, 0.0
         while True:
             g = monitor.current()
             if g is not None:
+                if missing > DROPOUT_MS:              # back from a blink
+                    settle = settings.post_blink_delay_ms
+                    counts["blinks_between"] = counts.get("blinks_between", 0) + 1
                 missing = 0.0
                 if math.hypot(*g) <= settings.fixation_tolerance_deg:
                     last_on, off_for = True, 0.0
@@ -849,11 +863,15 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 on = bool(last_on)
             else:
                 missing += POLL_MS
+                if missing > DROPOUT_MS:
+                    last_on, off_for = None, 0.0      # not known: a blink, not looking away
                 on = bool(last_on) and missing <= DROPOUT_MS
-            unknown = (last_on is None and missing <= DROPOUT_MS
-                       and off_for <= settings.fixation_off_grace_ms)
+            unknown = last_on is None and off_for <= settings.fixation_off_grace_ms
             fixation_colour(settings.fixation_colour if on or unknown
                             else settings.fixation_off_colour)
+            if on and settle > 0:
+                settle -= POLL_MS                     # the eye is back: let it settle
+                on = False
             if on:
                 held += POLL_MS
                 if held >= settings.fixation_hold_ms:
@@ -1237,7 +1255,11 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             if key == abort_key:
                 raise Aborted
 
-    def present(tex: Texture) -> Tuple[Optional[bool], float]:
+    blink_repeats: Dict[Tuple[float, float], int] = {}
+    MAX_BLINK_REPEATS = 3          # then a not-seen answer stands (a blind point never ends)
+
+    def present(tex: Texture, where: Optional[Tuple[float, float]] = None
+                ) -> Tuple[Optional[bool], float]:
         """One presentation. Returns (seen, reaction ms from stimulus onset); seen is
         None when the trial was thrown away because the eye left the +.
 
@@ -1286,8 +1308,16 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                              gaze_valid_pct=round(100 * frac))
             # A blink: the patch is repeated, but the person is not told off for it.
             blink = not fixated and frac < 0.5
+            if (not blink and not seen and settings.blink_min_ms > 0 and where is not None
+                    and blink_repeats.get(where, 0) < MAX_BLINK_REPEATS
+                    and monitor.longest_gap_ms(t_on, t_off) >= settings.blink_min_ms):
+                blink, fixated = True, False          # the patch may have fallen in a blink
+                blink_repeats[where] = blink_repeats.get(where, 0) + 1
             if blink:
+                gaze_info["blink"] = 1
                 counts["blinks"] = counts.get("blinks", 0) + 1
+                if settings.post_blink_delay_ms > 0:
+                    wait(settings.post_blink_delay_ms)
             if not fixated and not blink and settings.fixation_feedback:
                 # Right away, so the person knows; the next patch waits for the eye anyway.
                 fixation_colour(settings.fixation_off_colour)
@@ -1590,11 +1620,12 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 kind = (PROBE_TRIAL if p.zest.probing else
                         STAIRCASE_TRIAL if settings.strategy == FULL_THRESHOLD else ZEST_TRIAL)
                 contrast = p.zest.next_level()
-                seen, rt = present(texture(p.x_deg, p.y_deg, contrast))
+                seen, rt = present(texture(p.x_deg, p.y_deg, contrast), (p.x_deg, p.y_deg))
                 if seen is None:
-                    # The eye left the +: the answer says nothing about this point.
+                    # The eye left the + (or blinked): the answer says nothing about this point.
                     log(kind, p, p.x_deg, p.y_deg, contrast, False, rt,
-                        FIXATION_BREAK + " (tested again later)")
+                        ("BLINK" if gaze_info.get("blink") else FIXATION_BREAK)
+                        + " (tested again later)")
                 else:
                     if seen and not math.isnan(rt):
                         reaction_times.append(rt)
