@@ -38,9 +38,11 @@ class Tracker(FixationMonitor):
     watches_gaze = True
     calibration_supported = True
 
-    def __init__(self, error=0.3, cal_ok=True, distance=520.0, area=(302.0, 302.0 * 1964 / 3024)):
+    def __init__(self, error=0.3, cal_ok=True, distance=520.0, area=(302.0, 302.0 * 1964 / 3024),
+                 corners=None, eyes=None):
         super().__init__()
         self.error, self.cal_ok, self.distance, self.area = error, cal_ok, distance, area
+        self.corners, self.eyes = corners, eyes
         self.look = (0.0, 0.0)
         self.calls = []
 
@@ -54,9 +56,11 @@ class Tracker(FixationMonitor):
         return self.distance
 
     def display_area(self):
-        return dict(width_mm=self.area[0], height_mm=self.area[1])
+        return dict(width_mm=self.area[0], height_mm=self.area[1], **(self.corners or {}))
 
     def head_position(self):
+        if self.eyes:
+            return dict(left=self.eyes[0], right=self.eyes[1], distance_mm=self.distance)
         return dict(left=(-32.0, 170.0, self.distance), right=(32.0, 170.0, self.distance),
                     distance_mm=self.distance)
 
@@ -170,6 +174,82 @@ require("tracker_display_area" in o.gaze_check
 o = session(Tracker(area=(597.0, 335.8)))
 require(o.gaze_check.get("tracker_display_area_mismatch_mm") == [295.0, 139.7],
         "tracker still set for another screen (597 x 335.8 mm): warned, the difference saved")
+
+print("5c. lab fixes (15 Nov): eye marks follow the tilted tracker; short gaps ignored")
+import math  # noqa: E402
+# The lab's tracker: tilted 20 deg, picture bottom 10.9 mm above it (tracker-display output).
+lab = dict(top_left=[-265.4, 297.6, 97.7], top_right=[276.9, 297.6, 97.7],
+           bottom_left=[-265.4, 10.9, -6.7])
+t20 = math.radians(20.0)
+centre = [5.75, 10.9 + 152.5 * math.cos(t20), -6.7 + 152.5 * math.sin(t20)]
+normal = [0.0, -math.sin(t20), math.cos(t20)]          # out of the screen, towards the person
+eye = lambda dx: [centre[0] + dx, centre[1] + 510 * normal[1],  # noqa: E731
+                  centre[2] + 510 * normal[2]]
+obs = Observer(healthy, random.Random(3), width_mm=302.0, dist_mm=334.0)
+obs.open(W, H, 0.5)
+run_perimetry(PerimetrySettings(participant_id="POS2", strategy=FULL_THRESHOLD,
+                                extent=H24_2_CENTRAL, screen_width_mm=302.0,
+                                viewing_distance_mm=334.0, fixation_monitoring=FIX_TRACKER),
+              obs, rng=random.Random(3), show_instructions=True,
+              fixation_monitor=Tracker(distance=334.0, area=(542.3, 305.0), corners=lab,
+                                       eyes=(eye(-32.0), eye(32.0))))
+text, marks = obs.statuses[0]
+ring = next(m for m in marks if not m.label)
+eyes_m = [m for m in marks if m.label]
+inside = all(math.hypot(m.centre_px[0] - ring.centre_px[0],
+                        m.centre_px[1] - ring.centre_px[1]) < ring.radius_px for m in eyes_m)
+require(len(eyes_m) == 2 and inside and abs(eyes_m[0].centre_px[1] - ring.centre_px[1]) < 1,
+        "eyes level with the screen centre (tracker tilted 20 deg) are drawn inside the circle")
+
+
+class Gappy(Tracker):
+    """On the +, but every 4th sample lost (as at 50 cm: ~19-25 % missing)."""
+    n = 0
+
+    def _read(self):
+        Gappy.n += 1
+        return None if Gappy.n % 4 == 0 else (0.0, 0.0)
+
+
+class ColourSpy(Observer):
+    """Records each colour the + is given."""
+    @property
+    def fixation_colour(self):
+        return getattr(self, "_fc", "white")
+
+    @fixation_colour.setter
+    def fixation_colour(self, c):
+        self._fc = c
+        self.colours = getattr(self, "colours", []) + [c]
+
+
+def gappy_session(tracker):
+    s = PerimetrySettings(participant_id="GAP", strategy=FULL_THRESHOLD, extent=H24_2_CENTRAL,
+                          screen_width_mm=302.0, viewing_distance_mm=334.0,
+                          screen_height_mm=302.0 * 1964 / 3024, fixation_monitoring=FIX_TRACKER)
+    spy = ColourSpy(healthy, random.Random(3), width_mm=302.0, dist_mm=334.0)
+    spy.open(W, H, 0.5)
+    out = run_perimetry(s, spy, rng=random.Random(3), show_instructions=False,
+                        fixation_monitor=tracker)
+    return out, getattr(spy, "colours", [])
+
+
+o, colours = gappy_session(Gappy())
+require(o.counts.get("fixation_reminders", 0) == 0 and "red" not in colours,
+        "single lost samples (16 ms) keep the + white and do not restart the hold")
+
+
+class Blinky(Tracker):
+    """On the + for 20 samples, then lost for 10 (160 ms), again and again."""
+    n = 0
+
+    def _read(self):
+        Blinky.n += 1
+        return None if Blinky.n % 30 >= 20 else (0.0, 0.0)
+
+
+o, colours = gappy_session(Blinky())
+require("red" in colours, "gaze lost for longer than 100 ms still counts as off (the + turns red)")
 
 sys.path.insert(0, str(HERE / "tools"))
 import tracker_display  # noqa: E402

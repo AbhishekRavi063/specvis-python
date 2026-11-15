@@ -302,18 +302,40 @@ class PsychoPyBackend(StimulusBackend):
         win = self._require_window()
         w, h = win.size[0] / self._scale, win.size[1] / self._scale
         line_height = h * 0.024
-        draw = [visual.TextStim(win, text=text, units="pix", height=line_height,
-                                color="white", wrapWidth=w * 0.85, alignText="center",
-                                pos=(0, h * 0.5 - line_height), anchorVert="top")]
-        for mark in marks:
+        # Lab PC, 15 Nov: build the text and circles once and only update them
+        # on later calls (the positioning screen calls this every 100 ms; building new
+        # stimuli each time made it slow to react), and bring the window to the front so
+        # SPACE / ESC reach it.
+        cache = getattr(self, "_status_cache", None)
+        if cache is None or cache["win"] is not win:
+            cache = self._status_cache = dict(win=win, circles=[], labels=[], text=visual.TextStim(
+                win, text="", units="pix", height=line_height, color="white",
+                wrapWidth=w * 0.85, alignText="center", pos=(0, h * 0.5 - line_height),
+                anchorVert="top"))
+            try:
+                win.winHandle.activate()
+            except Exception:                           # noqa: BLE001 -- focus is best effort
+                pass
+        if cache["text"].text != text:
+            cache["text"].text = text
+        draw = [cache["text"]]
+        while len(cache["circles"]) < len(marks):
+            cache["circles"].append(visual.Circle(win, radius=10, units="pix", fillColor=None,
+                                                  lineWidth=3))
+            cache["labels"].append(visual.TextStim(win, text="", units="pix",
+                                                   height=line_height * 0.8))
+        for mark, circle, label in zip(marks, cache["circles"], cache["labels"]):
             pos = self._to_units(mark.centre_px)
-            radius = mark.radius_px / self._scale
-            draw.append(visual.Circle(win, radius=radius, pos=pos, units="pix",
-                                      lineColor=mark.colour, fillColor=None, lineWidth=3))
+            circle.radius = mark.radius_px / self._scale
+            circle.pos = pos
+            circle.lineColor = mark.colour
+            draw.append(circle)
             if mark.label:
-                draw.append(visual.TextStim(win, text=mark.label, units="pix",
-                                            height=line_height * 0.8, color=mark.colour,
-                                            pos=pos))
+                if label.text != mark.label:
+                    label.text = mark.label
+                label.pos = pos
+                label.color = mark.colour
+                draw.append(label)
         refresh = self._measured_refresh if self._measured_refresh == self._measured_refresh \
             else 60.0
         for _ in range(max(1, int(round(ms / 1000.0 * refresh)))):

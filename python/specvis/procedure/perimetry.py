@@ -792,10 +792,25 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         Time is counted in the waits asked for, so a test without a screen runs at
         full speed; on a real screen each wait is at least that long."""
         held = waited = 0.0
+        # Lab PC, 15 Nov: a time buffer. The tracker drops single samples very
+        # often at 50 cm (19 % missing, >1000 gaps under 0.1 s in a minute), and each one
+        # turned the + red and restarted the hold. Now a gap of up to DROPOUT_MS keeps the
+        # last valid state; only gaze seen outside the tolerance, or lost for longer, is "off".
+        # A trial that starts inside a gap is "not known yet", not "off": no red + until
+        # the gap is longer than DROPOUT_MS (but no hold time is counted either).
+        DROPOUT_MS = 100.0
+        last_on, missing = None, 0.0
         while True:
             g = monitor.current()
-            on = g is not None and math.hypot(*g) <= settings.fixation_tolerance_deg
-            fixation_colour(settings.fixation_colour if on else settings.fixation_off_colour)
+            if g is not None:
+                last_on, missing = math.hypot(*g) <= settings.fixation_tolerance_deg, 0.0
+                on = last_on
+            else:
+                missing += POLL_MS
+                on = bool(last_on) and missing <= DROPOUT_MS
+            unknown = last_on is None and missing <= DROPOUT_MS
+            fixation_colour(settings.fixation_colour if on or unknown
+                            else settings.fixation_off_colour)
             if on:
                 held += POLL_MS
                 if held >= settings.fixation_hold_ms:
@@ -1046,6 +1061,28 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         scale = 3.0                               # screen px per mm of head movement
         ring = max(60.0, 0.12 * height_px)
         eye_y0 = settings.tracker_eye_height_mm   # eye height above the tracker, centred
+        # Lab PC, 15 Nov: Tobii's y axis follows the tracker's tilt (20 deg
+        # here), so "170 mm above the tracker" is not "level with the screen centre". When
+        # the tracker's display area is known, place each eye by its offset from the screen
+        # centre measured along the screen's own right / up directions.
+        plane = None
+        da = gaze_check.get("tracker_display_area") or {}
+        try:
+            tl, tr_, bl = (np.array(da[k], dtype=float)
+                           for k in ("top_left", "top_right", "bottom_left"))
+            right_v, up_v = tr_ - tl, tl - bl
+            right_v, up_v = right_v / np.linalg.norm(right_v), up_v / np.linalg.norm(up_v)
+            centre = bl + (tr_ - tl) / 2.0 + (tl - bl) / 2.0
+            plane = (centre, right_v, up_v)
+        except (KeyError, TypeError, ValueError):
+            plane = None
+
+        def eye_px(o):
+            if plane is None:
+                return (cx + o[0] * scale, cy - (o[1] - eye_y0) * scale)
+            v = np.array(o[:3], dtype=float) - plane[0]
+            return (cx + float(v @ plane[1]) * scale, cy - float(v @ plane[2]) * scale)
+
         last_d = None
         while True:
             head = monitor.head_position() or {}
@@ -1057,7 +1094,7 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 if o is None:
                     continue
                 r = max(8.0, 0.22 * ring * set_mm / max(o[2], 1.0))
-                marks.append(Mark((cx + o[0] * scale, cy - (o[1] - eye_y0) * scale), r,
+                marks.append(Mark(eye_px(o), r,
                                   "L" if side == "left" else "R",
                                   "lightgreen" if good else "orange"))
             if d is None:
