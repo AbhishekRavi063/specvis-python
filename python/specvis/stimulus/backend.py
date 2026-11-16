@@ -154,6 +154,14 @@ class StimulusBackend(abc.ABC):
         false keeps presses made just before the call.
         """
 
+    def wait_for_key_watching(self, keys: Sequence[str], timeout_ms: Optional[float],
+                              fixation: Optional[Fixation] = None, clear_events: bool = True,
+                              on_frame=None) -> tuple[Optional[str], Optional[float]]:
+        """:meth:`wait_for_key`, calling ``on_frame()`` before every screen refresh (the
+        live red / white + while the person answers). Default: no calls, a plain wait --
+        screens without a frame loop (tests) behave exactly as before."""
+        return self.wait_for_key(keys, timeout_ms, fixation=fixation, clear_events=clear_events)
+
     @abc.abstractmethod
     def show_screen(self, text: str, marks: Sequence[Mark] = (),
                     keys: Sequence[str] = ("space",)) -> str:

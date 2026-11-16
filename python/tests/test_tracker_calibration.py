@@ -39,10 +39,11 @@ class Tracker(FixationMonitor):
     calibration_supported = True
 
     def __init__(self, error=0.3, cal_ok=True, distance=520.0, area=(302.0, 302.0 * 1964 / 3024),
-                 corners=None, eyes=None):
+                 corners=None, eyes=None, boxes=((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))):
         super().__init__()
         self.error, self.cal_ok, self.distance, self.area = error, cal_ok, distance, area
-        self.corners, self.eyes = corners, eyes
+        self.corners, self.eyes, self.boxes = corners, eyes, boxes
+        self.cal_eye = "not asked"
         self.look = (0.0, 0.0)
         self.calls = []
 
@@ -59,13 +60,16 @@ class Tracker(FixationMonitor):
         return dict(width_mm=self.area[0], height_mm=self.area[1], **(self.corners or {}))
 
     def head_position(self):
+        boxes = dict(left_box=self.boxes[0], right_box=self.boxes[1]) if self.boxes else {}
         if self.eyes:
-            return dict(left=self.eyes[0], right=self.eyes[1], distance_mm=self.distance)
+            return dict(left=self.eyes[0], right=self.eyes[1], distance_mm=self.distance,
+                        **boxes)
         return dict(left=(-32.0, 170.0, self.distance), right=(32.0, 170.0, self.distance),
-                    distance_mm=self.distance)
+                    distance_mm=self.distance, **boxes)
 
-    def cal_enter(self):
+    def cal_enter(self, eye=None):
         self.calls.append("enter")
+        self.cal_eye = eye
 
     def cal_point(self, x, y):
         self.calls.append(("point", round(x, 2), round(y, 2)))
@@ -417,6 +421,181 @@ run_perimetry(PerimetrySettings(**{**s.__dict__, "fixation_feedback": False}), o
               fixation_monitor=ScriptedMonitor(lambda i: (6.0, 0.0) if i % 9 == 4 else (0, 0)))
 require(not getattr(obs2, "messages", []), "feedback can be switched off")
 
+print("6b. lab report 16 Nov: watching the eye after the patch, head box, lids, clock, pauses")
+from specvis.procedure.fixation import ClockAlign, LiveFixation  # noqa: E402
+
+live = LiveFixation(3.0, 150.0, 150.0)
+seq = [(0.000, (0, 0)), (0.016, (12, 0)), (0.100, (12, 0)), (0.200, (12, 0)),
+       (0.216, None), (0.300, None), (0.400, None), (0.416, (0.5, 0))]
+states = [live.update(t, g) for t, g in seq]
+require(states == ["on", "on", "on", "off", "off", "off", "unknown", "on"],
+        f"live +: a look away turns it red after the grace time, a long gap is 'unknown', "
+        f"never red; back on the + -> white: {states}")
+
+
+class AfterPatchLook(ScriptedMonitor):
+    """On the + during every patch; then the eye goes 12 deg away for the next 8 looks
+    (while the person answers), and comes back."""
+    def __init__(self):
+        super().__init__(lambda i: (0.0, 0.0))
+        self.away = 0
+
+    def patch_shown(self, t0, t1):
+        super().patch_shown(t0, t1)
+        self.away = 8
+
+    def current(self):
+        g = (12.0, 0.0) if self.away > 0 else (0.0, 0.0)
+        self.away = max(0, self.away - 1)
+        self._add(time.perf_counter(), g)
+        return g
+
+
+class FrameObserver(Observer):
+    """A screen with a frame loop: on_frame is called 12 times per wait, and the colour of
+    the + is noted each time."""
+    def wait_for_key_watching(self, keys, timeout_ms, fixation=None, clear_events=True,
+                              on_frame=None):
+        for _ in range(12):
+            if on_frame is not None:
+                on_frame()
+                self.colours.append(self.fixation_colour)
+            time.sleep(0.0005)
+        return self.wait_for_key(keys, timeout_ms, fixation, clear_events)
+
+
+obs = FrameObserver(healthy, random.Random(5), width_mm=302.0, dist_mm=334.0)
+obs.colours = []
+obs.fixation_colour = "white"          # a screen that can colour the +
+obs.open(W, H, 0.5)
+o = run_perimetry(PerimetrySettings(participant_id="AFTER", strategy=FULL_THRESHOLD,
+                                    extent=H24_2_CENTRAL, screen_width_mm=302.0,
+                                    viewing_distance_mm=334.0, fixation_monitoring=FIX_TRACKER),
+                  obs, rng=random.Random(5), show_instructions=False,
+                  fixation_monitor=AfterPatchLook())
+after = [r for r in o.trial_rows if r.get("look_away_after_ms") not in ("", None)]
+require("red" in obs.colours and obs.colours[-1] == "white",
+        "the + turns red while the person answers with the eye off it, and white again "
+        "when it is back")
+require(o.counts.get("look_aways_after_patch", 0) > 0 and o.counts["fixation_breaks"] == 0
+        and all(p.zest.finished() for p in o.points),
+        f"look-aways after the patch are counted ({o.counts.get('look_aways_after_patch')}) "
+        "but the answers still count (no fixation breaks)")
+require(after and max(float(r["gaze_max_after_deg"]) for r in after) > 11.9
+        and max(float(r["look_away_after_ms"]) for r in after) > 0,
+        "trials.csv: gaze_max_after_deg and look_away_after_ms for each patch")
+
+obs = Observer(healthy, random.Random(3), width_mm=302.0, dist_mm=334.0)
+obs.open(W, H, 0.5)
+o = run_perimetry(PerimetrySettings(participant_id="NOBOX", strategy=FULL_THRESHOLD,
+                                    extent=H24_2_CENTRAL, screen_width_mm=302.0,
+                                    viewing_distance_mm=334.0, fixation_monitoring=FIX_TRACKER),
+                  obs, rng=random.Random(3), show_instructions=True,
+                  fixation_monitor=Tracker(distance=334.0, boxes=None))
+text, marks = obs.statuses[0]
+require("Position good" not in text and "does not say where the head is" in text
+        and all(m.colour == "orange" for m in marks if m.label)
+        and o.gaze_check.get("head_position_accepted_off") is True,
+        "no head-box data from the tracker -> NOT 'good' (the edge check could not run), "
+        "with a hint to restart the bridge")
+obs = Observer(healthy, random.Random(3), width_mm=302.0, dist_mm=334.0)
+obs.open(W, H, 0.5)
+o = run_perimetry(PerimetrySettings(participant_id="EDGE", strategy=FULL_THRESHOLD,
+                                    extent=H24_2_CENTRAL, screen_width_mm=302.0,
+                                    viewing_distance_mm=334.0, fixation_monitoring=FIX_TRACKER),
+                  obs, rng=random.Random(3), show_instructions=True,
+                  fixation_monitor=Tracker(distance=334.0,
+                                           boxes=((0.95, 0.5, 0.5), (0.9, 0.5, 0.5))))
+text, _ = obs.statuses[0]
+require("edge of the tracker's view" in text and "Position good" not in text,
+        "eyes at the edge of the tracker's view -> not good, 'centre the head'")
+obs = Observer(healthy, random.Random(3), width_mm=302.0, dist_mm=334.0)
+obs.open(W, H, 0.5)
+t = Tracker(distance=334.0)
+o = run_perimetry(PerimetrySettings(participant_id="OK", strategy=FULL_THRESHOLD,
+                                    extent=H24_2_CENTRAL, screen_width_mm=302.0,
+                                    viewing_distance_mm=334.0, fixation_monitoring=FIX_TRACKER),
+                  obs, rng=random.Random(3), show_instructions=True, fixation_monitor=t)
+require("Position good" in obs.statuses[0][0] and t.cal_eye is None,
+        "box data in the middle -> 'Position good'; calibration of both eyes by default")
+obs = Observer(healthy, random.Random(3), width_mm=302.0, dist_mm=334.0)
+obs.open(W, H, 0.5)
+t = Tracker(distance=334.0)
+o = run_perimetry(PerimetrySettings(participant_id="MONO", strategy=FULL_THRESHOLD,
+                                    extent=H24_2_CENTRAL, screen_width_mm=302.0,
+                                    viewing_distance_mm=334.0, fixation_monitoring=FIX_TRACKER,
+                                    tracker_monocular_calibration=True, eye="R"),
+                  obs, rng=random.Random(3), show_instructions=True, fixation_monitor=t)
+require(t.cal_eye == "R", "tracker_monocular_calibration: only the tested eye is calibrated")
+
+
+class LidMonitor(AlwaysBlinky):
+    """Every patch has a 150-ms gap; the lid during it is ``lid`` mm (open = 10 mm)."""
+    def __init__(self, lid):
+        super().__init__(lambda i: (0.0, 0.0))
+        self.lid = lid
+
+    def openness_between(self, t0, t1):
+        return [10.0, self.lid, 10.0]
+
+    def typical_openness(self):
+        return 10.0
+
+
+for lid, expect in ((9.5, "TRACKING_LOST"), (1.0, "BLINK")):
+    obs = Observer(right_hemianopia, random.Random(8), width_mm=302.0, dist_mm=334.0)
+    obs.open(W, H, 0.5)
+    o = run_perimetry(PerimetrySettings(participant_id="LID", strategy=FULL_THRESHOLD,
+                                        extent=H24_2_CENTRAL, screen_width_mm=302.0,
+                                        viewing_distance_mm=334.0,
+                                        fixation_monitoring=FIX_TRACKER, blink_min_ms=100.0),
+                      obs, rng=random.Random(8), show_instructions=False,
+                      fixation_monitor=LidMonitor(lid))
+    notes = [str(r.get("note", "")) for r in o.trial_rows]
+    other = "BLINK" if expect == "TRACKING_LOST" else "TRACKING_LOST"
+    require(any(n.startswith(expect) for n in notes)
+            and not any(n.startswith(other) for n in notes)
+            and o.counts["fixation_breaks"] == 0
+            and all(p.zest.finished() for p in o.points)
+            and any(r.get("eye_openness_min_mm") == lid for r in o.trial_rows),
+            f"a gap with the lid at {lid} mm (open 10) -> {expect}, repeated, never a "
+            "fixation break; eye_openness_min_mm logged")
+
+clk = ClockAlign()
+jitter = [0.003, 0.010, 0.002, 0.030, 0.002, 0.005]
+stamps = [clk.stamp(1000.0 + 0.004 * i, 50.0 + 0.004 * i + j) for i, j in enumerate(jitter)]
+require(all(abs(s_ - (50.0 + 0.004 * i + 0.002)) < 1e-6 for i, s_ in enumerate(stamps[4:], 4))
+        and abs(stamps[3] - (50.0 + 0.012 + 0.002)) < 1e-6,
+        "tracker time stamps: a sample delayed 30 ms on the way is still put at the moment "
+        "it was taken (smallest delay seen)")
+clk = ClockAlign()
+require([clk.stamp(0.0, 5.0), clk.stamp(0.0, 5.1)] == [5.0, 5.1],
+        "a tracker time that does not move on -> the arrival time is used")
+
+
+class Troubled(ScriptedMonitor):
+    def __init__(self):
+        super().__init__(lambda i: (0.0, 0.0))
+        self.trouble = 2
+
+    def problem(self):
+        if self.trouble:
+            self.trouble -= 1
+            return "the eye tracker lost its connection"
+        return None
+
+
+obs = Observer(healthy, random.Random(2), width_mm=302.0, dist_mm=334.0)
+obs.open(W, H, 0.5)
+o = run_perimetry(PerimetrySettings(participant_id="LOST", strategy=FULL_THRESHOLD,
+                                    extent=H24_2_CENTRAL, screen_width_mm=302.0,
+                                    viewing_distance_mm=334.0, fixation_monitoring=FIX_TRACKER),
+                  obs, rng=random.Random(2), show_instructions=False, fixation_monitor=Troubled())
+paused = [sc for sc in obs.screens if sc.startswith("PAUSED: the eye tracker lost")]
+require(len(paused) == 2 and o.counts.get("tracker_pauses") == 2
+        and all(p.zest.finished() for p in o.points),
+        "tracker connection lost -> the test pauses with a message until it is back")
+
 print("7. the bridge protocol (fake bridge)")
 bridge = subprocess.Popen([sys.executable, str(HERE / "tools" / "tobii_bridge.py"), "--fake",
                            "--port", "5575", "--fake-distance-mm", "548"],
@@ -444,6 +623,27 @@ try:
     head = m.head_position()
     require(head and head["left"][0] < 0 < head["right"][0] and abs(head["left"][2] - 548) < 0.1,
             f"and both eyes' positions (mm, Tobii user coordinates): {head}")
+    require(head["left_box"] == (0.55, 0.5, 0.5) and head["right_box"] == (0.45, 0.5, 0.5),
+            "and where each eye is in the tracker's view (user position guide)")
+    m.cal_enter("R")
+    res = m.cal_compute()
+    m.cal_leave()
+    require(m.cal_mode == "right eye only" and res.get("mode") == "right eye only",
+            f"monocular calibration of the tested eye through the bridge: {res}")
+    m._cmd("fake_lid", mm=3.5)
+    time.sleep(0.3)
+    lids = m.openness_between(time.perf_counter() - 0.1, time.perf_counter())
+    require(lids and lids[-1] == 3.5, f"the bridge sends the lid opening: {lids[-3:]}")
+    require(m.problem() is None, "no problem while gaze arrives")
+    m._cmd("fake_event", event="connection_lost")
+    time.sleep(0.2)
+    require(m.problem() and "lost" in m.problem()
+            and any(e["event"] == "connection_lost" for e in m.events),
+            f"a tracker notification arrives and is kept: {m.events}")
+    m._cmd("fake_event", event="connection_restored")
+    time.sleep(0.2)
+    require(m.problem() is None, "connection restored -> no problem")
+    require(m.clock.offset_s is not None, "samples are timed by the tracker's own clock")
     m.end()
 finally:
     bridge.terminate()

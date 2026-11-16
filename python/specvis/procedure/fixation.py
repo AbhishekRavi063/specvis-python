@@ -25,12 +25,13 @@ Three monitors:
 
 from __future__ import annotations
 
+import collections
 import json
 import math
 import socket
 import threading
 import time
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 Gaze = Optional[Tuple[float, float]]           # field degrees from the +, or None
 Sample = Tuple[float, Gaze]                    # (time.perf_counter(), gaze)
@@ -74,6 +75,74 @@ def distance_to_screen(origin, plane) -> Optional[float]:
     return None if math.isnan(z) else float(z)
 
 
+class LiveFixation:
+    """Is the eye on the + right now? For the live red / white + (lab report 16 Nov, B1:
+    feedback also while the person answers and between patches, not only before a patch).
+
+    The same rules as before a patch: gaze off the + for longer than ``grace_ms`` is
+    "off"; a gap in the gaze of up to ``dropout_ms`` keeps the last state; a longer gap (a
+    blink, the eye out of view) is "unknown", never "off". Times are in seconds."""
+
+    ON, OFF, UNKNOWN = "on", "off", "unknown"
+
+    def __init__(self, tolerance_deg: float, grace_ms: float, dropout_ms: float):
+        self.tol, self.grace, self.dropout = tolerance_deg, grace_ms / 1000.0, dropout_ms / 1000.0
+        self.state = self.UNKNOWN
+        self._off_since: Optional[float] = None
+        self._lost_since: Optional[float] = None
+
+    def update(self, t: float, g: Gaze) -> str:
+        if g is None:
+            if self._lost_since is None:
+                self._lost_since = t
+            if t - self._lost_since > self.dropout:
+                self.state, self._off_since = self.UNKNOWN, None
+            return self.state
+        self._lost_since = None
+        if math.hypot(*g) <= self.tol:
+            self.state, self._off_since = self.ON, None
+        else:
+            if self._off_since is None:
+                self._off_since = t
+            if t - self._off_since > self.grace or self.grace <= 0:
+                self.state = self.OFF
+        return self.state
+
+
+class ClockAlign:
+    """Tracker time -> this computer's ``time.perf_counter()`` (lab report B6).
+
+    Each sample carries the tracker's own time stamp; its arrival time here is that plus
+    a transport delay that varies (the bridge, UDP, Python's threads). The smallest
+    (arrival - tracker time) over the last ``window`` samples is the delay with no queueing,
+    so ``tracker time + that`` puts every sample at the moment it was taken, to within the
+    shortest transport time, and follows slow drift between the two clocks."""
+
+    def __init__(self, window: int = 1000):
+        self.window = window
+        self._i = 0
+        self._mins: collections.deque = collections.deque()      # (index, offset), rising
+        self.offset_s: Optional[float] = None
+
+    def stamp(self, device_s: float, arrival_s: float) -> float:
+        # A tracker time that does not move on (or jumps back) cannot be trusted: use the
+        # arrival time for that sample rather than stamping it in the past.
+        last = getattr(self, "_last_device", None)
+        self._last_device = device_s
+        if last is not None and device_s <= last:
+            return arrival_s
+        off = arrival_s - device_s
+        while self._mins and self._mins[-1][1] >= off:
+            self._mins.pop()
+        self._mins.append((self._i, off))
+        while self._mins[0][0] <= self._i - self.window:
+            self._mins.popleft()
+        self._i += 1
+        self.offset_s = self._mins[0][1]
+        aligned = device_s + self.offset_s
+        return aligned if arrival_s - aligned <= 0.5 else arrival_s
+
+
 class FixationMonitor:
     """The interface the procedure uses. Subclasses fill :meth:`_read` or push samples."""
 
@@ -84,6 +153,11 @@ class FixationMonitor:
         self.samples: List[Sample] = []
         self._to_deg: Optional[Callable[[float, float], Tuple[float, float]]] = None
         self._lock = threading.Lock()
+        #: Eye openness of the tested eye: (time, mm or None when not valid).
+        self.openness: List[Tuple[float, Optional[float]]] = []
+        #: Tracker notifications (connection lost / restored, calibration or display
+        #: area changed, buffer overflows, device warnings): {"t", "event", "info"}.
+        self.events: List[dict] = []
 
     def begin(self, backend, to_deg: Callable[[float, float], Tuple[float, float]]) -> None:
         """Start watching. ``to_deg`` turns screen pixels (top-left, y down) into field
@@ -131,13 +205,51 @@ class FixationMonitor:
             longest = max(longest, t1 - gap_start)
         return 1000.0 * longest
 
+    def look_away(self, t0: float, t1: float, tolerance_deg: float) -> Tuple[float, float]:
+        """Between t0 and t1: (largest offset of the gaze from the + in degrees, nan when
+        no valid sample; the longest stretch off the + in ms, from the first sample outside
+        the tolerance to the next one back inside it, or t1). Gaps neither end nor start a
+        stretch."""
+        with self._lock:
+            pts = [(t, g) for t, g in self.samples if t0 <= t <= t1 and g is not None]
+        if not pts:
+            return float("nan"), 0.0
+        worst = max(math.hypot(*g) for _, g in pts)
+        longest, since = 0.0, None
+        for t, g in pts:
+            if math.hypot(*g) > tolerance_deg:
+                if since is None:
+                    since = t
+            elif since is not None:
+                longest, since = max(longest, t - since), None
+        if since is not None:
+            longest = max(longest, t1 - since)
+        return worst, 1000.0 * longest
+
+    def openness_between(self, t0: float, t1: float) -> List[Optional[float]]:
+        """The tested eye's lid opening (mm; None = not valid) between t0 and t1; empty
+        when the tracker does not report it."""
+        with self._lock:
+            return [v for t, v in self.openness if t0 <= t <= t1]
+
+    def typical_openness(self) -> Optional[float]:
+        """The median valid lid opening so far (mm): this person's 'open'."""
+        with self._lock:
+            vals = sorted(v for _, v in self.openness[-5000:] if v is not None)
+        return vals[len(vals) // 2] if vals else None
+
+    def problem(self) -> Optional[str]:
+        """Why the tracker cannot be trusted right now (connection lost, no data), or None."""
+        return None
+
     def patch_shown(self, t0: float, t1: float) -> None:
         """Called after every patch with its start and end (time.perf_counter())."""
 
     # -- calibration (eye trackers that can be calibrated from the app) -----------------
     calibration_supported = False
 
-    def cal_enter(self) -> None:
+    def cal_enter(self, eye: Optional[str] = None) -> None:
+        """Start calibrating; ``eye`` 'L' or 'R' calibrates only that eye (monocular)."""
         raise NotImplementedError
 
     def cal_point(self, x: float, y: float) -> bool:
@@ -260,6 +372,16 @@ class TobiiMonitor(FixationMonitor):
         self._size = (0, 0)
         self._depths: List[Tuple[float, float]] = []
         self.model = ""
+        self.clock = ClockAlign()
+        self._upg: Tuple[float, Dict[str, Optional[tuple]]] = (0.0, {})
+        self._last_packet = 0.0
+        self._connection_lost = False
+        self._sdk_subs: List[tuple] = []
+
+    #: Tobii notifications worth keeping (lab report B6); those this SDK lacks are skipped.
+    NOTIFICATIONS = ("CONNECTION_LOST", "CONNECTION_RESTORED", "CALIBRATION_CHANGED",
+                     "DISPLAY_AREA_CHANGED", "GAZE_OUTPUT_FREQUENCY_CHANGED",
+                     "EYE_TRACKING_MODE_CHANGED", "DEVICE_FAULTS", "DEVICE_WARNINGS")
 
     def begin(self, backend, to_deg) -> None:
         super().begin(backend, to_deg)
@@ -278,9 +400,83 @@ class TobiiMonitor(FixationMonitor):
                                "Tobii Pro Eye Tracker Manager can see it.")
         self._tracker = found[0]
         self.model = f"{self._tracker.model} ({self._tracker.serial_number})"
-        self._tracker.subscribe_to(tr.EYETRACKER_GAZE_DATA, self._on_gaze, as_dictionary=True)
+        self._subscribe(tr.EYETRACKER_GAZE_DATA, self._on_sdk_gaze)
+        self._subscribe(getattr(tr, "EYETRACKER_USER_POSITION_GUIDE", None),
+                        self._on_user_position)
+        if getattr(tr, "CAPABILITY_HAS_EYE_OPENNESS_DATA", None) in getattr(
+                self._tracker, "device_capabilities", ()):
+            self._subscribe(getattr(tr, "EYETRACKER_EYE_OPENNESS_DATA", None),
+                            self._on_sdk_openness)
+        for name in self.NOTIFICATIONS:
+            self._subscribe(getattr(tr, "EYETRACKER_NOTIFICATION_" + name, None),
+                            lambda d, n=name: self._on_event(n.lower(), d))
+        self._subscribe(getattr(tr, "EYETRACKER_STREAM_ERRORS", None),
+                        lambda d: self._on_event("stream_error", d))
 
-    def _on_gaze(self, data: dict) -> None:
+    def _subscribe(self, stream, callback) -> None:
+        if stream is None:
+            return
+        try:
+            self._tracker.subscribe_to(stream, callback, as_dictionary=True)
+            self._sdk_subs.append((stream, callback))
+        except Exception:                              # noqa: BLE001 -- not on this model
+            pass
+
+    def _sdk_time(self, data: dict) -> float:
+        """A sample's own time (the tracker's system time stamp, us), on our clock."""
+        ts = data.get("system_time_stamp")
+        now = time.perf_counter()
+        return now if ts is None else self.clock.stamp(ts / 1e6, now)
+
+    def _on_sdk_gaze(self, data: dict) -> None:
+        self._on_gaze(data, self._sdk_time(data))
+
+    def _on_sdk_openness(self, data: dict) -> None:
+        side = "right" if self.eye == "R" else "left"
+        v = data.get(f"{side}_eye_openness_value")
+        ok = data.get(f"{side}_eye_validity") and v is not None and not math.isnan(v)
+        self._on_openness(float(v) if ok else None, self._sdk_time(data))
+
+    def _on_openness(self, mm: Optional[float], t: float) -> None:
+        with self._lock:
+            self.openness.append((t, mm))
+            if len(self.openness) > 200000:
+                del self.openness[:100000]
+
+    def _on_user_position(self, data: dict) -> None:
+        """Tobii's user position guide: each eye's place in the tracker's view, 0-1 on
+        each axis, 0.5 = the middle (lab report B2: SDK 2.1 no longer sends track-box
+        coordinates with the gaze)."""
+        pos = {}
+        for s in ("left", "right"):
+            p = data.get(f"{s}_user_position")
+            pos[s] = (None if not data.get(f"{s}_user_position_validity") or not p
+                      or any(math.isnan(c) for c in p) else tuple(float(c) for c in p))
+        with self._lock:
+            self._upg = (time.perf_counter(), pos)
+
+    def _on_event(self, name: str, info) -> None:
+        if name == "connection_lost":
+            self._connection_lost = True
+        elif name == "connection_restored":
+            self._connection_lost = False
+        try:
+            info = json.loads(json.dumps(info, default=str))
+        except (TypeError, ValueError):
+            info = str(info)
+        with self._lock:
+            self.events.append(dict(t=round(time.perf_counter(), 3), event=name, info=info))
+
+    def problem(self) -> Optional[str]:
+        if self._connection_lost:
+            return "the eye tracker lost its connection"
+        if getattr(self, "_sock", None) is not None and \
+                time.perf_counter() - self._last_packet > 2.0:
+            return "no data from the eye-tracker bridge for over 2 s (is it still running?)"
+        return None
+
+    def _on_gaze(self, data: dict, t: Optional[float] = None) -> None:
+        t = time.perf_counter() if t is None else t
         side = "right" if self.eye == "R" else "left"
         other = "left" if side == "right" else "right"
         # Eye distance: the z of the gaze origin (mm from the tracker). The tracker sits on
@@ -301,8 +497,7 @@ class TobiiMonitor(FixationMonitor):
             o = data.get(f"{s}_gaze_origin_in_user_coordinate_system")
             eyes[s] = (None if not data.get(f"{s}_gaze_origin_validity") or not o
                        or any(math.isnan(c) for c in o) else tuple(float(c) for c in o))
-            # Where the eye is in the tracker's track box (0-1 on each axis; 0.5 = the
-            # middle), straight from the Tobii SDK.
+            # Track-box coordinates, from SDKs that still send them with the gaze.
             b = data.get(f"{s}_gaze_origin_in_trackbox_coordinate_system")
             boxes[s] = (None if eyes[s] is None or not b or any(math.isnan(c) for c in b)
                         else tuple(float(c) for c in b))
@@ -313,13 +508,20 @@ class TobiiMonitor(FixationMonitor):
             fx, fy = data[f"{side}_gaze_point_on_display_area"]
             if not (math.isnan(fx) or math.isnan(fy)):
                 g = self._to_deg(fx * self._size[0], fy * self._size[1])
-        self._add(time.perf_counter(), g)
+        self._add(t, g)
 
     def head_position(self) -> Optional[dict]:
+        """Both eyes (mm), the distance, and where each eye is in the tracker's view
+        (``left_box`` / ``right_box``: 0-1 per axis, from the user position guide; None
+        when the tracker does not say)."""
+        now = time.perf_counter()
         with self._lock:
             stamp, eyes, boxes = getattr(self, "_eyes", (0.0, {}, {}))
-        if time.perf_counter() - stamp > 0.2:
+            upg_t, upg = self._upg
+        if now - stamp > 0.2:
             eyes, boxes = {}, {}
+        if now - upg_t <= 0.5:
+            boxes = {s: upg.get(s) or boxes.get(s) for s in ("left", "right")}
         return dict(left=eyes.get("left"), right=eyes.get("right"),
                     left_box=boxes.get("left"), right_box=boxes.get("right"),
                     distance_mm=self.eye_distance_mm(0.3))
@@ -378,30 +580,44 @@ class TobiiMonitor(FixationMonitor):
                     top_left=list(da.top_left), top_right=list(da.top_right),
                     bottom_left=list(da.bottom_left))
 
-    def cal_enter(self) -> None:
+    def cal_enter(self, eye: Optional[str] = None) -> None:
+        """``eye`` 'L' / 'R': Tobii's monocular calibration of that eye only (lab report
+        B4); the tracker falls back to both eyes when it cannot (``cal_mode`` says which)."""
+        side = {"L": "left", "R": "right"}.get(eye or "")
         if getattr(self, "_sock", None) is not None:
-            self._cmd("cal_enter")
+            r = self._cmd("cal_enter", **({"eye": side} if side else {}))
+            self.cal_mode = r.get("mode", "both eyes")
             return
-        self._calib = self._tr.ScreenBasedCalibration(self._tracker)
+        tr = self._tr
+        self._cal_eye = None
+        if side and hasattr(tr, "ScreenBasedMonocularCalibration"):
+            self._calib = tr.ScreenBasedMonocularCalibration(self._tracker)
+            self._cal_eye = tr.SELECTED_EYE_LEFT if side == "left" else tr.SELECTED_EYE_RIGHT
+            self.cal_mode = f"{side} eye only"
+        else:
+            self._calib = tr.ScreenBasedCalibration(self._tracker)
+            self.cal_mode = "both eyes"
         self._calib.enter_calibration_mode()
 
     def cal_point(self, x: float, y: float) -> bool:
         if getattr(self, "_sock", None) is not None:
             return bool(self._cmd("cal_point", x=x, y=y).get("ok"))
         tr = self._tr
-        status = self._calib.collect_data(x, y)
+        args = (x, y) if getattr(self, "_cal_eye", None) is None else (x, y, self._cal_eye)
+        status = self._calib.collect_data(*args)
         if status != tr.CALIBRATION_STATUS_SUCCESS:
-            status = self._calib.collect_data(x, y)
+            status = self._calib.collect_data(*args)
         return status == tr.CALIBRATION_STATUS_SUCCESS
 
     def cal_compute(self) -> dict:
+        mode = getattr(self, "cal_mode", "both eyes")
         if getattr(self, "_sock", None) is not None:
             r = self._cmd("cal_compute", timeout_s=30.0)
             return dict(ok=bool(r.get("ok")), status=r.get("status", r.get("error", "")),
-                        points=r.get("points", 0))
+                        points=r.get("points", 0), mode=mode)
         res = self._calib.compute_and_apply()
         return dict(ok=res.status == self._tr.CALIBRATION_STATUS_SUCCESS,
-                    status=str(res.status), points=len(res.calibration_points))
+                    status=str(res.status), points=len(res.calibration_points), mode=mode)
 
     def cal_leave(self) -> None:
         if getattr(self, "_sock", None) is not None:
@@ -444,8 +660,24 @@ class TobiiMonitor(FixationMonitor):
             msg = json.loads(data.decode("utf-8"))
         except ValueError:
             return
+        now = time.perf_counter()
+        self._last_packet = now
+        if msg.get("event"):                       # a tracker notification
+            self._on_event(str(msg["event"]), msg.get("info"))
+            return
+        # The sample's own time: the tracker's system time stamp (us), put on our clock.
+        t = now if msg.get("t") is None else self.clock.stamp(float(msg["t"]) / 1e6, now)
         if msg.get("model") and not self.model:
             self.model = f"{msg['model']} ({msg.get('serial', '?')}) via bridge"
+        upg = {long: msg.get(short + "u") for short, long in (("l", "left"), ("r", "right"))}
+        if any(k in msg for k in ("lu", "ru")):
+            self._on_user_position({f"{s}_user_position": v for s, v in upg.items()} |
+                                   {f"{s}_user_position_validity": v is not None
+                                    for s, v in upg.items()})
+        own = "r" if self.eye == "R" else "l"
+        if own + "op" in msg:                      # eye openness (mm), null when not valid
+            v = msg[own + "op"]
+            self._on_openness(None if v is None else float(v), t)
         data = {}
         for short, long in (("r", "right"), ("l", "left")):
             x, y, valid = msg.get(short) or (None, None, 0)
@@ -461,7 +693,7 @@ class TobiiMonitor(FixationMonitor):
             b = msg.get(short + "b")
             data[f"{long}_gaze_origin_in_trackbox_coordinate_system"] = (
                 tuple(float(c) for c in b) if b else (float("nan"),) * 3)
-        self._on_gaze(data)
+        self._on_gaze(data, t)
 
     def _listen(self) -> None:
         while self._running:
@@ -480,7 +712,12 @@ class TobiiMonitor(FixationMonitor):
             self._sock = None
             self._cmd_sock.close()
         if self._tracker is not None:
-            self._tracker.unsubscribe_from(self._tr.EYETRACKER_GAZE_DATA, self._on_gaze)
+            for stream, callback in self._sdk_subs:
+                try:
+                    self._tracker.unsubscribe_from(stream, callback)
+                except Exception:                      # noqa: BLE001
+                    pass
+            self._sdk_subs = []
             self._tracker = None
 
     def describe(self) -> str:

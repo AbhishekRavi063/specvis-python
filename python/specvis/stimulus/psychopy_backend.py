@@ -265,6 +265,11 @@ class PsychoPyBackend(StimulusBackend):
     def wait_for_key(self, keys: Sequence[str], timeout_ms: Optional[float],
                      fixation: Optional[Fixation] = None, clear_events: bool = True
                      ) -> tuple[Optional[str], Optional[float]]:
+        return self.wait_for_key_watching(keys, timeout_ms, fixation, clear_events)
+
+    def wait_for_key_watching(self, keys: Sequence[str], timeout_ms: Optional[float],
+                              fixation: Optional[Fixation] = None, clear_events: bool = True,
+                              on_frame=None) -> tuple[Optional[str], Optional[float]]:
         from psychopy import core, event
 
         win = self._require_window()
@@ -280,6 +285,8 @@ class PsychoPyBackend(StimulusBackend):
                 return key, when * 1000.0
             if limit is not None and clock.getTime() >= limit:
                 return None, None
+            if on_frame is not None:
+                on_frame()                  # e.g. turn the + red while the eye is off it
             self._draw_fixation(fixation)
             win.flip()
 

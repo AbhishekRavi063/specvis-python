@@ -72,7 +72,7 @@ from ..threshold.base import Termination
 from ..threshold.full_threshold import FullThresholdLocation, FullThresholdSettings
 from ..threshold.zest import ZEST, ZestLocationThreshold, ZestSettings
 from .fixation import (FIX_BLIND_SPOT, FIX_NONE, FIXATION_MODES, GAZE_MODES,
-                       FixationMonitor, judge_patch, monitor_for)
+                       FixationMonitor, LiveFixation, judge_patch, monitor_for)
 from .prior_table import PriorTable
 from .session import Aborted, SessionError
 
@@ -280,6 +280,16 @@ class PerimetrySettings:
     tracker_max_centre_error_deg: float = 1.0
     tracker_max_mean_error_deg: float = 1.5
     tracker_max_data_loss_pct: float = 20.0     # our suggestion
+    #: Tobii's monocular calibration of the tested eye only (lab report 16 Nov, B4; Tobii
+    #: Pro SDK ScreenBasedMonocularCalibration). Off by default until the lab compares the
+    #: validation accuracy with it on and off.
+    tracker_monocular_calibration: bool = False
+    #: Eye openness (Tobii Pro Fusion; lab report B3). A gap in the gaze during which the
+    #: lid fell below this share of the person's own median opening is a blink; a gap with
+    #: the lid open throughout is lost tracking (not the person's fault, logged apart).
+    #: 0.5 is our suggestion, to tune from the pilot's eye_openness_min_mm column. Without
+    #: valid openness the earlier rule (any long gap = a blink) is used.
+    blink_openness_frac: float = 0.5
     #: The tracker's own idea of the screen size (its display area) must match the
     #: settings, or every gaze position is off; checked at the start (tolerance in mm).
     display_area_tolerance_mm: float = 3.0
@@ -802,8 +812,16 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
     t0 = time.perf_counter()
     aborted = False
 
-    def wait(ms: float) -> None:
-        key, _ = backend.wait_for_key([abort_key, pause_key], ms, fixation=fixation)
+    def wait_key(keys, ms, clear_events=True, on_frame=None):
+        """wait_for_key, with ``on_frame`` called every refresh where the screen can."""
+        watching_wait = getattr(backend, "wait_for_key_watching", None)
+        if on_frame is not None and watching_wait is not None:
+            return watching_wait(keys, ms, fixation=fixation, clear_events=clear_events,
+                                 on_frame=on_frame)
+        return backend.wait_for_key(keys, ms, fixation=fixation, clear_events=clear_events)
+
+    def wait(ms: float, on_frame=None) -> None:
+        key, _ = wait_key([abort_key, pause_key], ms, on_frame=on_frame)
         if key == abort_key:
             raise Aborted
         if key == pause_key:
@@ -848,6 +866,18 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         DROPOUT_MS = settings.fixation_dropout_ms
         last_on, missing, off_for, settle = None, 0.0, 0.0, 0.0
         while True:
+            trouble = monitor.problem()
+            if trouble:
+                # Lab report B6: pause rather than test on without a working tracker.
+                counts["tracker_pauses"] = counts.get("tracker_pauses", 0) + 1
+                key = backend.show_screen(
+                    f"PAUSED: {trouble}.\n\nCheck the eye tracker (and the bridge window), "
+                    f"then press {seen_key.upper()} to go on   ({abort_key.upper()} stops).",
+                    keys=[seen_key, abort_key])
+                if key == abort_key:
+                    raise Aborted
+                held = waited = 0.0
+                continue
             g = monitor.current()
             if g is not None:
                 if missing > DROPOUT_MS:              # back from a blink
@@ -941,7 +971,10 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         w, h = width_px, height_px
         pts = list(TRACKER_CAL_POINTS)
         rng.shuffle(pts)
-        monitor.cal_enter()
+        if settings.tracker_monocular_calibration:
+            monitor.cal_enter(settings.eye)        # the tested eye only (lab report B4)
+        else:
+            monitor.cal_enter()
         accepted = []
         try:
             for fx, fy in pts:
@@ -1164,9 +1197,12 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                     placed.append((side, eye_px(o), o))
             inside = bool(placed) and all(
                 math.hypot(px - cx, py - cy) <= ring for _, (px, py), _ in placed)
-            in_box = all(BOX_EDGE <= c <= 1 - BOX_EDGE
-                         for s_ in ("left_box", "right_box") if head.get(s_)
-                         for c in head[s_][:2])
+            # Lab report 16 Nov, B2: where each eye is in the tracker's view (Tobii's user
+            # position guide). No data is not "fine": the check could not run.
+            boxes = [head.get(f"{side}_box") for side, _, _ in placed]
+            box_known = bool(placed) and all(b is not None for b in boxes)
+            in_box = box_known and all(BOX_EDGE <= c <= 1 - BOX_EDGE
+                                       for b in boxes for c in b[:2])
             good = dist_ok and inside and in_box
             for side, pos, o in placed:
                 r = max(8.0, 0.22 * ring * set_mm / max(o[2], 1.0))
@@ -1188,6 +1224,9 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                     else:
                         line += ("\nEyes too far right: move the head to the left" if mx > 0
                                  else "\nEyes too far left: move the head to the right")
+                elif placed and not box_known:
+                    line += ("\nThe tracker does not say where the head is in its view: "
+                             "restart the tracker bridge (python\\specvis.bat tracker-bridge)")
                 elif not in_box:
                     line += "\nEyes near the edge of the tracker's view: centre the head"
                 if good:
@@ -1284,9 +1323,21 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         presses = [t for k, t in report.keys if k == seen_key]
         early = [t for t in presses if t < settings.early_press_ms]
         presses = [t for t in presses if t >= settings.early_press_ms]
+        # Lab report 16 Nov, B1: the + also turns red while the person answers and between
+        # patches when the eye leaves it (feedback only: the answer still counts, the eye
+        # was on the + while the patch was shown, as with the Humphrey).
+        live = LiveFixation(settings.fixation_tolerance_deg, settings.fixation_off_grace_ms,
+                            settings.fixation_dropout_ms)
+
+        def watch_frame() -> None:
+            state = live.update(time.perf_counter(), monitor.current())
+            fixation_colour(settings.fixation_off_colour if state == LiveFixation.OFF
+                            else settings.fixation_colour)
+
+        on_frame = watch_frame if watching else None
         if not presses:
-            key, latency = backend.wait_for_key([seen_key, abort_key], response_window(),
-                                                fixation=fixation, clear_events=False)
+            key, latency = wait_key([seen_key, abort_key], response_window(),
+                                    clear_events=False, on_frame=on_frame)
             if key == abort_key:
                 raise Aborted
             if key == seen_key:
@@ -1302,22 +1353,39 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                                                settings.fixation_tolerance_deg,
                                                max_out_frac=settings.fixation_break_max_out_frac)
             counts["gaze_checked"] += 1
-            # The eye not seen for most of the patch is a blink, not a look away.
-            counts["fixation_breaks"] += int(not fixated and frac >= 0.5)
             gaze_info.update(gaze_max_deg="" if math.isnan(worst) else round(worst, 2),
                              gaze_valid_pct=round(100 * frac))
             # A blink: the patch is repeated, but the person is not told off for it.
             blink = not fixated and frac < 0.5
-            if (not blink and not seen and settings.blink_min_ms > 0 and where is not None
-                    and blink_repeats.get(where, 0) < MAX_BLINK_REPEATS
-                    and monitor.longest_gap_ms(t_on, t_off) >= settings.blink_min_ms):
+            gap_blink = (not blink and not seen and settings.blink_min_ms > 0
+                         and where is not None
+                         and blink_repeats.get(where, 0) < MAX_BLINK_REPEATS
+                         and monitor.longest_gap_ms(t_on, t_off) >= settings.blink_min_ms)
+            if gap_blink:
                 blink, fixated = True, False          # the patch may have fallen in a blink
                 blink_repeats[where] = blink_repeats.get(where, 0) + 1
+            # Lab report B3: eye openness tells a real blink (lid closed) from lost
+            # tracking with the lid open. Both repeat the patch; they are logged apart.
+            lids = monitor.openness_between(t_on - 0.05, t_off + 0.05)
+            valid_lids = [v for v in lids if v is not None]
+            if valid_lids:
+                gaze_info["eye_openness_min_mm"] = round(min(valid_lids), 2)
+            tracking_lost = False
             if blink:
+                typical = monitor.typical_openness()
+                if valid_lids and typical and len(valid_lids) == len(lids) and \
+                        min(valid_lids) >= settings.blink_openness_frac * typical:
+                    tracking_lost = True              # the lid stayed open
+            # The eye not seen for most of the patch is a blink, not a look away.
+            counts["fixation_breaks"] += int(not fixated and frac >= 0.5 and not gap_blink)
+            if tracking_lost:
+                gaze_info["tracking_lost"] = 1
+                counts["tracking_lost"] = counts.get("tracking_lost", 0) + 1
+            elif blink:
                 gaze_info["blink"] = 1
                 counts["blinks"] = counts.get("blinks", 0) + 1
-                if settings.post_blink_delay_ms > 0:
-                    wait(settings.post_blink_delay_ms)
+            if blink and settings.post_blink_delay_ms > 0:
+                wait(settings.post_blink_delay_ms, on_frame)
             if not fixated and not blink and settings.fixation_feedback:
                 # Right away, so the person knows; the next patch waits for the eye anyway.
                 fixation_colour(settings.fixation_off_colour)
@@ -1325,7 +1393,17 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 counts["fixation_feedback"] = counts.get("fixation_feedback", 0) + 1
 
         gap = rng.uniform(*settings.iti_ms) + (0.0 if seen else settings.miss_extra_pause_ms)
-        wait(gap)
+        wait(gap, on_frame)
+        if watching:
+            # B1 (b): where the eye went after the patch (answer time and the pause), for
+            # analysis; whether it should void the answer is for the team (C3).
+            after_max, after_ms = monitor.look_away(t_off, time.perf_counter(),
+                                                    settings.fixation_tolerance_deg)
+            gaze_info.update(gaze_max_after_deg="" if math.isnan(after_max)
+                             else round(after_max, 2),
+                             look_away_after_ms=round(after_ms))
+            if after_ms > max(settings.fixation_off_grace_ms, 0.0):
+                counts["look_aways_after_patch"] = counts.get("look_aways_after_patch", 0) + 1
         return (seen if fixated else None), (presses[0] if presses else float("nan"))
 
     def log(kind: str, point: Optional[PerimetryPoint], x: Optional[float],
@@ -1343,6 +1421,9 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                    gaze_max_deg=gaze_info.get("gaze_max_deg", ""),
                    eye_distance_mm=distance_now(),
                    gaze_valid_pct=gaze_info.get("gaze_valid_pct", ""),
+                   gaze_max_after_deg=gaze_info.get("gaze_max_after_deg", ""),
+                   look_away_after_ms=gaze_info.get("look_away_after_ms", ""),
+                   eye_openness_min_mm=gaze_info.get("eye_openness_min_mm", ""),
                    note=note)
         rows.append(row)
         if on_trial is not None:
@@ -1624,7 +1705,8 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 if seen is None:
                     # The eye left the + (or blinked): the answer says nothing about this point.
                     log(kind, p, p.x_deg, p.y_deg, contrast, False, rt,
-                        ("BLINK" if gaze_info.get("blink") else FIXATION_BREAK)
+                        ("BLINK" if gaze_info.get("blink") else
+                         "TRACKING_LOST" if gaze_info.get("tracking_lost") else FIXATION_BREAK)
                         + " (tested again later)")
                 else:
                     if seen and not math.isnan(rt):
@@ -1654,6 +1736,16 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
     finally:
         if monitor_started:
             monitor.end()
+            # Lab report B6: tracker notifications, and how the tracker's clock was put on
+            # ours (for lining gaze up with patches, and later with the EEG).
+            if getattr(monitor, "events", None):
+                gaze_check["tracker_events"] = list(monitor.events)
+            clock = getattr(monitor, "clock", None)
+            if clock is not None and clock.offset_s is not None:
+                gaze_check["tracker_clock"] = dict(
+                    rule="sample time = tracker system time stamp + the smallest "
+                         "(arrival - tracker time) over the last 1000 samples",
+                    offset_s=round(clock.offset_s, 6))
 
     dists = [r["eye_distance_mm"] for r in rows if r.get("eye_distance_mm") not in ("", None)]
     if dists:

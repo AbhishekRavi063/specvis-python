@@ -23,7 +23,15 @@ Each UDP gaze packet is JSON: {"t": device time (us), "l": [x, y, valid], "r": [
 (0-1, top-left), null when invalid; lz / rz how far each eye is from the tracker (the z of
 the SDK's gaze origin, in mm), null when invalid; lo / ro each eye's full position
 ([x, y, z] mm in Tobii's User Coordinate System: origin at the tracker's front centre,
-x to the person's right, y up, z towards the person), for the head-positioning screen.
+x to the person's right, y up, z towards the person), for the head-positioning screen;
+lu / ru each eye's place in the tracker's view from Tobii's user position guide ([x, y, z],
+0-1, 0.5 = the middle; null when not valid); lop / rop each eye's lid opening (mm, eye
+openness; null when not valid); lp / rp pupil diameter (mm). A tracker notification
+(connection lost / restored, calibration or display area changed, device warnings, stream
+errors) is sent at once as {"t": ..., "event": name, "info": ...}.
+
+"cal_enter" may carry "eye": "left" | "right" for Tobii's monocular calibration of that eye
+only; the reply's "mode" says what was done ("both eyes" when the SDK cannot).
 """
 
 import argparse
@@ -86,8 +94,10 @@ def main() -> int:
     if args.fake:
         look = [0.5, 0.5]
         dist = [args.fake_distance_mm]
+        lid = [10.0]
         area = dict(top_left=[-265.4, 297.6, 97.7], top_right=[276.9, 297.6, 97.7],
                     bottom_left=[-265.4, 10.9, -6.7])
+        mode = ["both eyes"]
 
         def fake_handle(msg):
             if msg.get("cmd") == "display_area":
@@ -96,11 +106,18 @@ def main() -> int:
                 for k in ("top_left", "top_right", "bottom_left"):
                     area[k] = [float(c) for c in msg[k]]
                 return dict(ok=True, **area_info(area))
+            if msg.get("cmd") == "cal_enter":
+                mode[0] = f"{msg['eye']} eye only" if msg.get("eye") else "both eyes"
+                return dict(ok=True, mode=mode[0])
             if msg.get("cmd") == "fake_look":          # tests: where the pretend eye looks
                 look[:] = [float(msg["x"]), float(msg["y"])]
             if msg.get("cmd") == "fake_distance":      # tests: the pretend eye moves
                 dist[0] = float(msg["mm"])
-            return dict(ok=True, status="calibration_status_success", points=5)
+            if msg.get("cmd") == "fake_lid":           # tests: the pretend lid opening (mm)
+                lid[0] = msg["mm"]
+            if msg.get("cmd") == "fake_event":         # tests: a tracker notification
+                send({"t": int(time.time() * 1e6), "event": msg["event"], "info": {}})
+            return dict(ok=True, status="calibration_status_success", points=5, mode=mode[0])
 
         print(f"FAKE gaze -> 127.0.0.1:{args.port}; commands on {args.port + 1}. "
               "Ctrl-C to stop.")
@@ -109,7 +126,8 @@ def main() -> int:
                 send({"t": int(time.time() * 1e6), "l": [look[0], look[1], 1],
                       "r": [look[0], look[1], 1], "lz": dist[0], "rz": dist[0],
                       "lo": [-32.0, 170.0, dist[0]], "ro": [32.0, 170.0, dist[0]],
-                      "lb": [0.55, 0.5, 0.5], "rb": [0.45, 0.5, 0.5],
+                      "lu": [0.55, 0.5, 0.5], "ru": [0.45, 0.5, 0.5],
+                      "lop": lid[0], "rop": lid[0],
                       "model": "FAKE", "serial": "none"})
                 serve(fake_handle, 1 / 120)
         except KeyboardInterrupt:
@@ -171,15 +189,63 @@ def main() -> int:
         p = data.get(f"{side}_pupil_diameter", float("nan"))
         return None if math.isnan(p) else round(float(p), 2)
 
+    # The latest user position guide and eye openness, sent with each gaze sample.
+    latest = dict(lu=None, ru=None, lop=None, rop=None)
+
+    def on_user_position(data):
+        """Tobii's user position guide: 0-1 per axis, 0.5 = the middle of the view (SDK
+        2.1 no longer sends track-box coordinates with the gaze)."""
+        for short, side in (("l", "left"), ("r", "right")):
+            p = data.get(f"{side}_user_position")
+            latest[short + "u"] = (None if not data.get(f"{side}_user_position_validity")
+                                   or not p or any(math.isnan(c) for c in p)
+                                   else [round(float(c), 3) for c in p])
+
+    def on_openness(data):
+        for short, side in (("l", "left"), ("r", "right")):
+            v = data.get(f"{side}_eye_openness_value")
+            latest[short + "op"] = (None if not data.get(f"{side}_eye_validity") or v is None
+                                    or math.isnan(v) else round(float(v), 2))
+
     def on_gaze(data):
-        send({"t": data.get("system_time_stamp"), "l": point(data, "left"),
-              "r": point(data, "right"), "lz": depth(data, "left"), "rz": depth(data, "right"),
-              "lo": origin(data, "left"), "ro": origin(data, "right"),
-              "lb": box(data, "left"), "rb": box(data, "right"),
-              "lp": pupil(data, "left"), "rp": pupil(data, "right"),
-              "model": model, "serial": serial})
+        packet = {"t": data.get("system_time_stamp"), "l": point(data, "left"),
+                  "r": point(data, "right"), "lz": depth(data, "left"),
+                  "rz": depth(data, "right"),
+                  "lo": origin(data, "left"), "ro": origin(data, "right"),
+                  "lb": box(data, "left"), "rb": box(data, "right"),
+                  "lp": pupil(data, "left"), "rp": pupil(data, "right"),
+                  "model": model, "serial": serial}
+        packet.update(latest)
+        if not has_openness:
+            del packet["lop"], packet["rop"]
+        send(packet)
+
+    def on_event(name):
+        def handler(data):
+            try:
+                info = json.loads(json.dumps(data, default=str))
+            except (TypeError, ValueError):
+                info = str(data)
+            t = data.get("system_time_stamp") if isinstance(data, dict) else None
+            send({"t": t, "event": name, "info": info})
+            print(f"  tracker event: {name} {info}", flush=True)
+        return handler
+
+    subs = []
+
+    def subscribe(stream, callback):
+        if stream is None:
+            return False
+        try:
+            tracker.subscribe_to(stream, callback, as_dictionary=True)
+        except Exception as e:                          # noqa: BLE001 -- not on this model
+            print(f"  (could not subscribe to {stream}: {e})")
+            return False
+        subs.append((stream, callback))
+        return True
 
     calib = tr.ScreenBasedCalibration(tracker)
+    mono = None
     in_cal = [False]
 
     def handle(msg):
@@ -197,21 +263,33 @@ def main() -> int:
             da = tracker.get_display_area()
             return dict(ok=True, **area_info(dict(top_left=da.top_left, top_right=da.top_right,
                                                   bottom_left=da.bottom_left)))
+        nonlocal calib, mono
         if c == "cal_enter":
-            if not in_cal[0]:
-                calib.enter_calibration_mode()
-                in_cal[0] = True
-            return dict(ok=True)
+            if in_cal[0]:
+                calib.leave_calibration_mode()
+                in_cal[0] = False
+            eye = msg.get("eye")
+            mono = None
+            if eye in ("left", "right") and hasattr(tr, "ScreenBasedMonocularCalibration"):
+                calib = tr.ScreenBasedMonocularCalibration(tracker)
+                mono = tr.SELECTED_EYE_LEFT if eye == "left" else tr.SELECTED_EYE_RIGHT
+            else:
+                calib = tr.ScreenBasedCalibration(tracker)
+            calib.enter_calibration_mode()
+            in_cal[0] = True
+            return dict(ok=True, mode=f"{eye} eye only" if mono is not None else "both eyes")
         if c == "cal_point":
             x, y = float(msg["x"]), float(msg["y"])
-            status = calib.collect_data(x, y)
+            a = (x, y) if mono is None else (x, y, mono)
+            status = calib.collect_data(*a)
             if status != tr.CALIBRATION_STATUS_SUCCESS:      # Tobii: try a point once more
-                status = calib.collect_data(x, y)
+                status = calib.collect_data(*a)
             return dict(ok=status == tr.CALIBRATION_STATUS_SUCCESS, status=str(status))
         if c == "cal_compute":
             res = calib.compute_and_apply()
             return dict(ok=res.status == tr.CALIBRATION_STATUS_SUCCESS, status=str(res.status),
-                        points=len(res.calibration_points))
+                        points=len(res.calibration_points),
+                        mode="both eyes" if mono is None else "one eye only")
         if c == "cal_leave":
             if in_cal[0]:
                 calib.leave_calibration_mode()
@@ -219,7 +297,18 @@ def main() -> int:
             return dict(ok=True)
         return dict(ok=False, error=f"unknown command {c!r}")
 
-    tracker.subscribe_to(tr.EYETRACKER_GAZE_DATA, on_gaze, as_dictionary=True)
+    caps = getattr(tracker, "device_capabilities", ())
+    has_openness = (getattr(tr, "CAPABILITY_HAS_EYE_OPENNESS_DATA", None) in caps and
+                    subscribe(getattr(tr, "EYETRACKER_EYE_OPENNESS_DATA", None), on_openness))
+    has_upg = subscribe(getattr(tr, "EYETRACKER_USER_POSITION_GUIDE", None), on_user_position)
+    for name in ("CONNECTION_LOST", "CONNECTION_RESTORED", "CALIBRATION_CHANGED",
+                 "DISPLAY_AREA_CHANGED", "GAZE_OUTPUT_FREQUENCY_CHANGED",
+                 "EYE_TRACKING_MODE_CHANGED", "DEVICE_FAULTS", "DEVICE_WARNINGS"):
+        subscribe(getattr(tr, "EYETRACKER_NOTIFICATION_" + name, None), on_event(name.lower()))
+    subscribe(getattr(tr, "EYETRACKER_STREAM_ERRORS", None), on_event("stream_error"))
+    subscribe(tr.EYETRACKER_GAZE_DATA, on_gaze)
+    print(f"User position guide: {'yes' if has_upg else 'NO'};  eye openness: "
+          f"{'yes' if has_openness else 'no'}")
     print(f"Sending gaze to 127.0.0.1:{args.port}; commands on {args.port + 1}. "
           "Leave this running; Ctrl-C to stop.")
     try:
@@ -235,7 +324,11 @@ def main() -> int:
     finally:
         if in_cal[0]:
             calib.leave_calibration_mode()
-        tracker.unsubscribe_from(tr.EYETRACKER_GAZE_DATA, on_gaze)
+        for stream, callback in subs:
+            try:
+                tracker.unsubscribe_from(stream, callback)
+            except Exception:                           # noqa: BLE001
+                pass
     return 0
 
 
