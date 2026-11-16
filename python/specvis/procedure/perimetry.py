@@ -98,6 +98,11 @@ H24_2_CENTRAL = "24-2 central"
 #: apart everywhere and equal on all sides (Padmini, 14 Nov). 36 points; the 2 blind-spot
 #: points left out -> 34 tested. Fits the 24.5" BenQ at 50-52.8 cm (the Tobii: 50-80 cm).
 H24_2_15 = "24-2 within 15"
+#: The 24-2 positions within +/-9 deg up/down (rows at 3 and 9 deg), out to 21 deg across
+#: (16 Nov, for the meeting with Elliott): 32 points; the 2 blind-spot points left out
+#: -> 30 tested. Fits the 24.5" BenQ at 57 cm with room to spare (up to ~67 cm), where the
+#: Tobii Pro Fusion tracks well; the +/-15 deg rows do not fit beyond 53.2 cm.
+H24_2_9 = "24-2 within 9"
 #: A 5-deg grid (15 Nov, our own; not a clinical grid): 5 deg apart everywhere, 2.5 deg
 #: off both midlines (like the 24-2's 3 deg), out to 22.5 deg across and 12.5 deg up/down.
 #: 60 positions; those whose patch overlaps the blind spot are left out (4) -> 56 tested.
@@ -112,13 +117,14 @@ GRID_5_SEEDS = ((-7.5, 7.5), (7.5, 7.5), (-7.5, -7.5), (7.5, -7.5))
 #: blind_spot_below_deg). A point is left out when its patch centre is within this box
 #: widened by 0.5 deg.
 BLIND_SPOT_HALF_W, BLIND_SPOT_HALF_H, BLIND_SPOT_MARGIN = 2.75, 3.75, 0.5
-EXTENTS = (H24_2_15, H24_2, H24_2_CENTRAL, GRID_5, FULL, CENTRAL)
+EXTENTS = (H24_2_15, H24_2_9, H24_2, H24_2_CENTRAL, GRID_5, FULL, CENTRAL)
 #: The grids offered in the app (15 Nov: only the study grid, so nobody picks another by
 #: mistake). The others stay in the code so older sessions and settings still load.
-APP_EXTENTS = (H24_2_CENTRAL, GRID_5)
+APP_EXTENTS = (H24_2_CENTRAL, H24_2_9, GRID_5)
 #: What the grid choices are called in the app, so they can be compared at a glance.
 EXTENT_NAMES = {
     H24_2_15: "24-2 within +/-15 deg: 34 spots, 6 deg apart, equal on all sides (50-52.8 cm)",
+    H24_2_9: "24-2: 30 spots, 6 deg apart, rows at 3 and 9 deg only (57 cm, eye tracker)",
     H24_2: "24-2: 52 spots, 6 deg apart (needs ~33-37 cm; too close for the eye tracker)",
     H24_2_CENTRAL: "24-2: 42 points, 6 deg apart, without the top/bottom rows (51 cm)",
     GRID_5: "5 deg grid: 56 points, 5 deg apart everywhere (up to 62 cm, eye tracker)",
@@ -131,6 +137,7 @@ EXTENT_NAMES = {
 #: lie in the blind spot and are left out, as in the Humphrey's analysis -> 52 tested.
 H24_2_ROWS = {3: (3, 9, 15, 21), 9: (3, 9, 15, 21), 15: (3, 9, 15), 21: (3, 9)}
 H24_2_15_ROWS = {3: (3, 9, 15), 9: (3, 9, 15), 15: (3, 9, 15)}
+H24_2_9_ROWS = {3: (3, 9, 15, 21), 9: (3, 9, 15, 21)}
 H24_2_NASAL = 27
 H24_2_SEEDS = ((-9, 9), (9, 9), (-9, -9), (9, -9))   # the Humphrey's primary points
 
@@ -420,7 +427,7 @@ def seeds_for(settings: PerimetrySettings) -> Tuple[Tuple[float, float], ...]:
     own = tuple((float(x), float(y)) for x, y in settings.seed_points)
     if all(p in on_grid for p in own):
         return own
-    if settings.extent in (H24_2, H24_2_CENTRAL, H24_2_15):
+    if settings.extent in (H24_2, H24_2_CENTRAL, H24_2_15, H24_2_9):
         return tuple((float(x), float(y)) for x, y in H24_2_SEEDS)
     if settings.extent == GRID_5:
         return GRID_5_SEEDS
@@ -467,9 +474,9 @@ def grid_points(settings: PerimetrySettings) -> Tuple[List[Tuple[int, int]],
                        and abs(y - by) <= BLIND_SPOT_HALF_H + BLIND_SPOT_MARGIN)
             (dropped if in_spot else kept).append((x, y))
         return kept, dropped
-    if settings.extent in (H24_2, H24_2_CENTRAL, H24_2_15):
+    if settings.extent in (H24_2, H24_2_CENTRAL, H24_2_15, H24_2_9):
         central = settings.extent != H24_2
-        rows = H24_2_15_ROWS if settings.extent == H24_2_15 else H24_2_ROWS
+        rows = {H24_2_15: H24_2_15_ROWS, H24_2_9: H24_2_9_ROWS}.get(settings.extent, H24_2_ROWS)
         pts = [(sx * x, sy * y) for y, row in rows.items() for x in row
                for sx in (-1, 1) for sy in (-1, 1) if not (central and y == 21)]
         if not central:

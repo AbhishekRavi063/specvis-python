@@ -98,16 +98,22 @@ everyone = [p.id for p in store.all_participants(people, sessions)]
 require(everyone == ["OLD01", "PILOT02"], f"old session's participant is listed: {everyone}")
 presets = store.list_presets(presets_dir)
 lab = [p for p in store.list_presets(store.PRESETS_DIR)]
-require(len(lab) == 3 and all(p.settings["extent"] == "24-2 central"
+require(len(lab) == 4 and all(p.settings["extent"] == "24-2 central"
                               and p.settings["viewing_distance_mm"] == 510.0
                               and p.settings["strategy"] == "full_threshold" for p in lab[:2])
         and [p.settings["fixation_monitoring"] for p in lab] == ["eye tracker", "blind spot",
-                                                                 "eye tracker"]
+                                                                 "eye tracker", "eye tracker"]
         and lab[2].settings["extent"] == "5 deg grid"
-        and lab[2].settings["viewing_distance_mm"] == 600.0,
-        f"three app presets: the 42-point 24-2 at 51 cm (two), the 5-deg grid at 60 cm: "
+        and lab[2].settings["viewing_distance_mm"] == 600.0
+        and lab[3].settings["extent"] == "24-2 within 9"
+        and lab[3].settings["viewing_distance_mm"] == 570.0
+        and lab[3].settings["fixation_monitoring"] == "eye tracker"
+        and lab[3].settings["strategy"] == "full_threshold"
+        and lab[3].settings["dithering"] is False,
+        f"four app presets: the 42-point 24-2 at 51 cm (two), the 5-deg grid at 60 cm, "
+        f"the 30-point 24-2 at 57 cm: "
         f"{[p.name for p in lab]}")
-require(len(presets) == 4 and presets[0].settings["viewing_distance_mm"] == 350.0,
+require(len(presets) == 5 and presets[0].settings["viewing_distance_mm"] == 350.0,
         "the tests add their own laptop practice preset")
 
 print("2. the window")

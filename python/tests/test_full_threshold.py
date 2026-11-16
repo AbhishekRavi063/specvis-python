@@ -14,7 +14,7 @@ import tempfile
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from specvis.procedure.perimetry import (EXTENT_NAMES, EXTENTS, FULL, FULL_THRESHOLD,  # noqa: E402
-                                         H24_2, H24_2_15, H24_2_CENTRAL, SITA_FAST,
+                                         H24_2, H24_2_15, H24_2_9, H24_2_CENTRAL, SITA_FAST,
                                          PerimetrySettings, categorise, contrast_range_db,
                                          default_calibration, fit_problem, grid_points,
                                          seeds_for, settings_from_dict, settings_to_dict,
@@ -343,6 +343,35 @@ require(fit_problem(PerimetrySettings(extent=H24_2, screen_width_mm=544.0, scree
 require(fit_problem(PerimetrySettings(viewing_distance_mm=530, screen_height_mm=0,
                                       extent=H24_2_15, screen_width_mm=544.0), 1920, 1080) is None,
         "height 0 = from the width and pixels (306 mm): 53.0 cm fits then")
+
+print("9b. the 24-2 rows at 3 and 9 deg only (30 spots, 57 cm, 16 Nov)")
+for eye, sign in (("R", 1), ("L", -1)):
+    kept, dropped = grid_points(PerimetrySettings(eye=eye, extent=H24_2_9))
+    full, _ = grid_points(PerimetrySettings(eye=eye, extent=H24_2))
+    require(len(kept) == 30 and set(kept) <= set(full)
+            and sorted({abs(x) for x, _ in kept}) == [3, 9, 15, 21]
+            and sorted({abs(y) for _, y in kept}) == [3, 9],
+            f"{eye} eye: 30 spots, 24-2 positions, rows at 3 and 9 deg, out to 21 deg")
+    require(sorted(dropped) == sorted([(sign * 15, -3), (sign * 15, 3)]),
+            f"{eye} eye: the 2 blind-spot points left out")
+    require(set(seeds_for(PerimetrySettings(eye=eye, extent=H24_2_9)))
+            == {(-9.0, 9.0), (9.0, 9.0), (-9.0, -9.0), (9.0, -9.0)},
+            "seeds: the Humphrey's primary points (+/-9, +/-9)")
+LAB_SCREEN = dict(extent=H24_2_9, screen_width_mm=542.3, screen_height_mm=305.0)
+require(all(fit_problem(PerimetrySettings(viewing_distance_mm=d, **LAB_SCREEN), 1920, 1080) is None
+            for d in (500, 550, 570, 600, 650))
+        and fit_problem(PerimetrySettings(viewing_distance_mm=680, **LAB_SCREEN), 1920, 1080)
+        is not None
+        and fit_problem(PerimetrySettings(viewing_distance_mm=570, extent=H24_2_CENTRAL,
+                                          screen_width_mm=542.3, screen_height_mm=305.0),
+                        1920, 1080) is not None,
+        "the 30-spot grid fits the lab BenQ at 50-65 cm; the 42-spot one does not at 57 cm")
+require(H24_2_9 in APP_EXTENTS and "30 spots" in EXTENT_NAMES[H24_2_9],
+        "offered in the app, named with its number of spots")
+o9, _ = run(right_hemianopia, 25, settings_overrides=dict(LAB, extent=H24_2_9))
+cats9 = collections.Counter(categorise(o9, p) for p in o9.points)
+require(o9.valid and len(o9.points) == 30 and abs(cats9["blind"] - 14) <= 1,
+        f"hemianopia on the 30-spot grid: {cats9['blind']} blind of 14 in the right half")
 o, _ = run(right_hemianopia, 24, settings_overrides=dict(LAB, extent=H24_2_15))
 cats = collections.Counter(categorise(o, p) for p in o.points)
 require(o.valid and len(o.points) == 34 and abs(cats["blind"] - 16) <= 1,
