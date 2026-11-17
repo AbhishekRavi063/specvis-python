@@ -6,6 +6,7 @@
 #     python/specvis.sh app-simple  the earlier one-window perimetry app
 #     python/specvis.sh run       settings dialog, a threshold session, the results map
 #     python/specvis.sh perimetry one eye of monocular perimetry, the visual-field map
+#     python/specvis.sh block2    Block 2 quick test (orientation x rate; see run_block2.py)
 #     python/specvis.sh build-table  normal table from the pilot perimetry sessions
 #     python/specvis.sh redraw-maps  redraw the grid and contour maps of saved sessions
 #     python/specvis.sh test      run every check in python/tests
@@ -51,6 +52,11 @@ case "${1:-}" in
     perimetry)
         need_venv
         exec "$PY" "$HERE/run_perimetry.py"
+        ;;
+    block2)
+        need_venv
+        shift
+        exec "$PY" "$HERE/run_block2.py" "$@"
         ;;
     build-table)
         need_venv
@@ -114,7 +120,7 @@ case "${1:-}" in
         echo "Done. Try:  python/specvis.sh test"
         ;;
     *)
-        echo "usage: python/specvis.sh {app|app-simple|run|perimetry|build-table|redraw-maps|test|display|calibrate|preflight|tracker-setup|tracker-bridge|tracker-display|setup}" >&2
+        echo "usage: python/specvis.sh {app|app-simple|run|perimetry|block2|build-table|redraw-maps|test|display|calibrate|preflight|tracker-setup|tracker-bridge|tracker-display|setup}" >&2
         exit 2
         ;;
 esac

@@ -6,6 +6,7 @@ rem     python\specvis.bat app          the ReFreM perimetry app
 rem     python\specvis.bat perimetry    one eye, simple dialog instead of the app
 rem     python\specvis.bat build-table  normal table from the pilot sessions
 rem     python\specvis.bat redraw-maps  redraw the maps of saved sessions
+rem     python\specvis.bat block2       Block 2 quick test (orientation x rate; see run_block2.py)
 rem     python\specvis.bat test         every check in python\tests
 rem     python\specvis.bat calibrate    measure the screen with the ColorCAL
 rem     python\specvis.bat preflight    check screen, ColorCAL, scale, eye tracker
@@ -30,6 +31,7 @@ if not exist "%PY%" (
 if /I "%~1"=="app"         ( call :startbridge & "%PY%" "%HERE%run_app.py" & call :stopbridge & exit /b )
 if /I "%~1"=="app-simple"  ( call :startbridge & "%PY%" "%HERE%run_app.py" --simple & call :stopbridge & exit /b )
 if /I "%~1"=="perimetry"   ( call :startbridge & "%PY%" "%HERE%run_perimetry.py" & call :stopbridge & exit /b )
+if /I "%~1"=="block2"      ( call :startbridge & "%PY%" "%HERE%run_block2.py" %2 %3 %4 %5 %6 %7 %8 %9 & call :stopbridge & exit /b )
 if /I "%~1"=="build-table" ( "%PY%" "%HERE%build_prior_table.py" %2 %3 %4 %5 & exit /b )
 if /I "%~1"=="redraw-maps" ( "%PY%" "%HERE%redraw_maps.py" %2 %3 %4 %5 & exit /b )
 if /I "%~1"=="test"        ( "%PY%" "%HERE%run_tests.py" & exit /b )
@@ -37,7 +39,7 @@ if /I "%~1"=="calibrate"   ( "%PY%" "%HERE%tools\calibrate_photometer.py" %2 %3 
 if /I "%~1"=="preflight"   ( "%PY%" "%HERE%tools\preflight.py" %2 %3 %4 %5 %6 %7 %8 %9 & exit /b )
 if /I "%~1"=="display"     ( "%PY%" "%HERE%tools\measure_display.py" %2 %3 %4 %5 & exit /b )
 if /I "%~1"=="tracker-display" ( "%PY%" "%HERE%tools\tracker_display.py" %2 %3 %4 %5 %6 %7 %8 %9 & exit /b )
-echo usage: python\specvis.bat {setup^|app^|app-simple^|perimetry^|build-table^|redraw-maps^|test^|display^|calibrate^|preflight^|tracker-setup^|tracker-bridge^|tracker-display}
+echo usage: python\specvis.bat {setup^|app^|app-simple^|perimetry^|block2^|build-table^|redraw-maps^|test^|display^|calibrate^|preflight^|tracker-setup^|tracker-bridge^|tracker-display}
 exit /b 2
 
 :trackersetup

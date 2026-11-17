@@ -281,6 +281,11 @@ class PerimetrySettings:
     #: an eye tracker resume_delay_ms is a plain wait.
     resume_delay_ms: float = 1200.0
     look_away_settle_ms: float = 600.0
+    #: Only the setup, no threshold test (Block 2, 17 Nov): head position, tracker
+    #: calibration and accuracy check, the instructions, and the blind-spot search (with
+    #: or without the eye tracker); the outcome's gaze_check and blind_spot_search say
+    #: what was found.
+    setup_only: bool = False
     #: Feedback to the person (our addition; Sanchez-Lopez et al. gave constant feedback
     #: on fixation): the + turns red while the eye is off it, and after a trial thrown
     #: away for an eye movement "Keep looking at the +" shows for a moment.
@@ -1706,20 +1711,21 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 raise Aborted
             need_settle(settings.resume_delay_ms)
 
-        for _ in range(settings.practice_trials):
+        for _ in range(0 if settings.setup_only else settings.practice_trials):
             p = rng.choice(seeds or points)
             seen, rt = present(texture(p.x_deg, p.y_deg, settings.high_contrast))
             log(PRACTICE, None, p.x_deg, p.y_deg, settings.high_contrast, bool(seen), rt,
                 FIXATION_BREAK if seen is None else "")
 
-        if settings.fixation_monitoring == FIX_BLIND_SPOT and p_blind_spot > 0:
+        if settings.setup_only or (settings.fixation_monitoring == FIX_BLIND_SPOT
+                                   and p_blind_spot > 0):
             if settings.blind_spot_search:
                 search_blind_spot()
             else:
                 search.update(status="off: used the average position")
 
         last = None
-        while True:
+        while not settings.setup_only:
             pending = [p for p in points if not p.zest.finished()]
             if not pending:
                 break
