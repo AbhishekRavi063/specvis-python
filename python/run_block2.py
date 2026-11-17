@@ -1,17 +1,21 @@
 #!/usr/bin/env python
-"""Block 2, quick test: horizontal or vertical, at 9 reversal rates, in 4 quadrants and
-the natural blind spot. See specvis/procedure/block2.py.
+"""Block 2, quick test: horizontal or vertical stripes at every spot of a Block 1 map,
+static first, then 20 and 38 Hz. See specvis/procedure/block2.py.
 
-    python\\specvis.bat block2 --participant P01 --eye R --scale "Lab screen" --tracker
-    python/specvis.sh block2 --eye R --windowed          (a try-out on the Mac)
+    python\\specvis.bat block2 --participant P01 --scale "Lab screen" --tracker
+    python/specvis.sh block2 --no-map --windowed          (a try-out on the Mac, no map)
 
-Starts with Block 1's setup: with --tracker, head position, calibration of the tested
-eye and the accuracy check; then the blind-spot search (press SPACE when a flash is
-seen), so the blind-spot patch goes where this person does not see.
+--participant (as typed in Block 1) finds that person's latest finished Block 1 run;
+--eye L/R picks the eye's run; --block1 <folder> picks one run by hand.
+
+--block1 is the folder of a finished Block 1 run (its summary.csv and session.json): each
+spot gets its own threshold contrast, "not seen" spots and the blind spot the highest.
+The eye, screen, distance and background are taken from that run. With --tracker,
+Block 1's setup runs first (head position, calibration, accuracy check; no perimetry).
 
 Saves to ``python/output/block2/<participant>_<eye>_<date>_<time>/``: trials.csv (every
-patch, with the asked-for and the shown rate), summary.csv (right answers per place and
-rate) and session.json. Set the screen to its highest refresh rate first (Windows:
+trial), summary.csv (per spot and condition: shown, seen, right, wrong), overall.csv
+(true positives, false presses on catch trials) and session.json. Set the screen to its highest refresh rate first (Windows:
 Settings > Display > Advanced display); the rates shown follow from it.
 """
 
@@ -32,13 +36,35 @@ from specvis.procedure.perimetry import background_for, default_calibration  # n
 from specvis.procedure.session import SessionError  # noqa: E402
 
 OUTPUT = HERE / "output" / "block2"
+PERIMETRY = HERE / "output" / "perimetry"
+
+
+def latest_block1(participant: str, eye=None, root: pathlib.Path = PERIMETRY):
+    """This participant's latest Block 1 run that finished (not stopped early), for
+    ``eye`` if given. Folders are <participant>_<eye>_<date>_<time>."""
+    import json
+    best = None
+    for eye_ in ([eye] if eye else ["L", "R"]):
+        for d in root.glob(f"{participant}_{eye_}_*"):
+            rest = d.name[len(participant) + 3:]
+            if not (len(rest) == 15 and rest[8] == "_" and rest.replace("_", "").isdigit()):
+                continue
+            try:
+                meta = json.loads((d / "session.json").read_text())
+            except (OSError, ValueError):
+                continue
+            if meta.get("aborted") or not (d / "summary.csv").exists():
+                continue
+            if best is None or rest > best[0]:
+                best = (rest, d)
+    return best[1] if best else None
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--participant", default="pilot")
-    ap.add_argument("--eye", choices=("L", "R"), default="R",
-                    help="the tested eye; cover the other one")
+    ap.add_argument("--eye", choices=("L", "R"), default=None,
+                    help="the tested eye; cover the other one (default: from Block 1, else R)")
     ap.add_argument("--distance-mm", type=float, default=570.0)
     ap.add_argument("--screen-width-mm", type=float, default=542.3,
                     help="the lab BenQ: 542.3 (MacBook 14\": 302)")
@@ -46,24 +72,45 @@ def main() -> int:
                     help="the lab BenQ: 305 (0 = from the width and the pixels)")
     ap.add_argument("--scale", default="",
                     help='the ColorCAL scale to use, e.g. "Lab screen" (none: an assumed screen)')
-    ap.add_argument("--train-s", type=float, default=5.0, help="seconds of flicker per patch")
+    ap.add_argument("--block1", default="",
+                    help="folder of the Block 1 run whose map to use (default: this "
+                         "participant's latest finished Block 1 run, for --eye if given)")
+    ap.add_argument("--no-map", action="store_true",
+                    help="no Block 1 map: 4 quadrants + blind spot (try-outs only)")
+    ap.add_argument("--train-s", type=float, default=2.0, help="seconds each patch is up")
     ap.add_argument("--no-blind-spot", action="store_true")
     ap.add_argument("--no-setup", action="store_true",
-                    help="skip the calibration and blind-spot search (average blind spot)")
+                    help="skip the eye-tracker calibration")
     group = ap.add_mutually_exclusive_group()
     group.add_argument("--tracker", action="store_true", help="record gaze with the Tobii")
     group.add_argument("--mouse", action="store_true",
                        help="the mouse pointer stands in for the eye (try-outs)")
     ap.add_argument("--windowed", action="store_true", help="not full screen (try-outs only)")
     args = ap.parse_args()
+    if not args.block1 and not args.no_map:
+        found = latest_block1(args.participant, args.eye)
+        if found is None:
+            print(f'No finished Block 1 run for participant "{args.participant}"'
+                  + (f", {args.eye} eye" if args.eye else "") + f" in {PERIMETRY}.\n"
+                  "Give --participant as in Block 1, or --block1 <folder>, or --no-map.")
+            return 1
+        args.block1 = str(found)
+    print(f"Block 1 run: {args.block1 or 'none (--no-map)'}", flush=True)
 
     settings = Block2Settings(
-        participant_id=args.participant, eye=args.eye,
+        participant_id=args.participant, eye=args.eye or "R",
         viewing_distance_mm=args.distance_mm, screen_width_mm=args.screen_width_mm,
         screen_height_mm=args.screen_height_mm, train_ms=1000.0 * args.train_s,
         blind_spot=not args.no_blind_spot, setup=not args.no_setup,
+        block1_folder=args.block1 or None,
         fixation_monitoring=FIX_TRACKER if args.tracker else (FIX_MOUSE if args.mouse
                                                               else FIX_NONE))
+    if args.block1:
+        from specvis.procedure.block2 import load_block1, settings_from_block1
+        places, _ = load_block1(args.block1)
+        settings = settings_from_block1(settings)
+        print(f"Block 1 map: {len(places)} places, {settings.eye} eye, "
+              f"{settings.viewing_distance_mm:.0f} mm", flush=True)
     if args.scale:
         from specvis.app.store import ScaleStore
         found = [s for s in ScaleStore().all() if s.name == args.scale]
