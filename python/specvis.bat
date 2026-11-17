@@ -10,7 +10,8 @@ rem     python\specvis.bat test         every check in python\tests
 rem     python\specvis.bat calibrate    measure the screen with the ColorCAL
 rem     python\specvis.bat preflight    check screen, ColorCAL, scale, eye tracker
 rem     python\specvis.bat tracker-setup   once: python\.venv-tobii (Python 3.10 + tobii-research)
-rem     python\specvis.bat tracker-bridge  before each eye-tracker session; leave it open
+rem     python\specvis.bat tracker-bridge  the eye-tracker bridge on its own (app / perimetry
+rem                                        start it themselves when it is not running)
 rem     python\specvis.bat tracker-display show / set the tracker's screen geometry
 rem
 rem Results are saved in python\output\ (never on GitHub).
@@ -26,9 +27,9 @@ if not exist "%PY%" (
     echo python\.venv not found. Create it first:  python\specvis.bat setup
     exit /b 1
 )
-if /I "%~1"=="app"         ( "%PY%" "%HERE%run_app.py" & exit /b )
-if /I "%~1"=="app-simple"  ( "%PY%" "%HERE%run_app.py" --simple & exit /b )
-if /I "%~1"=="perimetry"   ( "%PY%" "%HERE%run_perimetry.py" & exit /b )
+if /I "%~1"=="app"         ( call :startbridge & "%PY%" "%HERE%run_app.py" & call :stopbridge & exit /b )
+if /I "%~1"=="app-simple"  ( call :startbridge & "%PY%" "%HERE%run_app.py" --simple & call :stopbridge & exit /b )
+if /I "%~1"=="perimetry"   ( call :startbridge & "%PY%" "%HERE%run_perimetry.py" & call :stopbridge & exit /b )
 if /I "%~1"=="build-table" ( "%PY%" "%HERE%build_prior_table.py" %2 %3 %4 %5 & exit /b )
 if /I "%~1"=="redraw-maps" ( "%PY%" "%HERE%redraw_maps.py" %2 %3 %4 %5 & exit /b )
 if /I "%~1"=="test"        ( "%PY%" "%HERE%run_tests.py" & exit /b )
@@ -50,6 +51,30 @@ if errorlevel 1 (
 "%HERE%.venv-tobii\Scripts\python.exe" -m pip install --upgrade pip
 "%HERE%.venv-tobii\Scripts\python.exe" -m pip install tobii-research
 echo Done. Before each session:  python\specvis.bat tracker-bridge
+exit /b 0
+
+:startbridge
+rem Lab report 17 Nov: the app starts the eye-tracker bridge itself, in its own
+rem (minimised) window, unless one is already running (it holds UDP 127.0.0.1:5556).
+rem No python\.venv-tobii (no tracker on this PC) or SPECVIS_NO_BRIDGE=1: nothing is started.
+if defined SPECVIS_NO_BRIDGE exit /b 0
+if not exist "%HERE%.venv-tobii\Scripts\python.exe" exit /b 0
+netstat -ano -p UDP | findstr /C:"127.0.0.1:5556 " >nul && (
+    echo Eye-tracker bridge already running.
+    exit /b 0
+)
+echo Starting the eye-tracker bridge in its own window ^(Tobii bridge, minimised^)...
+start "Tobii bridge" /MIN cmd /k ""%HERE%.venv-tobii\Scripts\python.exe" "%HERE%tools\tobii_bridge.py""
+set "STARTED_BRIDGE=1"
+exit /b 0
+
+:stopbridge
+rem Lab report 17 Nov: closing the app also closes the bridge -- only one this script
+rem started (a bridge run by hand with tracker-bridge is left alone).
+if not defined STARTED_BRIDGE exit /b 0
+echo Closing the eye-tracker bridge...
+taskkill /FI "WINDOWTITLE eq Tobii bridge*" /T /F >nul 2>nul
+set "STARTED_BRIDGE="
 exit /b 0
 
 :trackerbridge

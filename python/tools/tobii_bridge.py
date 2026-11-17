@@ -51,6 +51,31 @@ def area_info(a: dict) -> dict:
                 width_mm=round(width, 1), height_mm=round(height, 1))
 
 
+class FakeSDK:
+    """The tobii_research names calibration_ok needs, as the SDK's own strings, so the
+    --fake bridge answers a one-eye calibration the way the real tracker does."""
+    CALIBRATION_STATUS_SUCCESS = "calibration_status_success"
+    CALIBRATION_STATUS_SUCCESS_LEFT_EYE = "calibration_status_success_left_eye"
+    CALIBRATION_STATUS_SUCCESS_RIGHT_EYE = "calibration_status_success_right_eye"
+    CALIBRATION_STATUS_FAILURE = "calibration_status_failure"
+    SELECTED_EYE_LEFT, SELECTED_EYE_RIGHT = "selected_eye_left", "selected_eye_right"
+
+
+def calibration_ok(tr, status, mono) -> bool:
+    """Whether a calibration answer is a success. Lab report 16 Nov: a monocular
+    calibration (ScreenBasedMonocularCalibration) answers "success, left/right eye", never
+    plain "success" -- comparing with plain success only marked every one-eye calibration
+    as failed. ``mono`` is the eye being calibrated (tr.SELECTED_EYE_*), None for both;
+    a success for the other eye is not a success."""
+    if status == tr.CALIBRATION_STATUS_SUCCESS:
+        return True
+    if mono is not None and mono == getattr(tr, "SELECTED_EYE_LEFT", object()):
+        return status == getattr(tr, "CALIBRATION_STATUS_SUCCESS_LEFT_EYE", object())
+    if mono is not None and mono == getattr(tr, "SELECTED_EYE_RIGHT", object()):
+        return status == getattr(tr, "CALIBRATION_STATUS_SUCCESS_RIGHT_EYE", object())
+    return False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -98,6 +123,8 @@ def main() -> int:
         area = dict(top_left=[-265.4, 297.6, 97.7], top_right=[276.9, 297.6, 97.7],
                     bottom_left=[-265.4, 10.9, -6.7])
         mode = ["both eyes"]
+        fake_mono = [None]
+        forced = [None]                                # tests: a calibration answer to give
 
         def fake_handle(msg):
             if msg.get("cmd") == "display_area":
@@ -108,7 +135,21 @@ def main() -> int:
                 return dict(ok=True, **area_info(area))
             if msg.get("cmd") == "cal_enter":
                 mode[0] = f"{msg['eye']} eye only" if msg.get("eye") else "both eyes"
+                fake_mono[0] = {"left": FakeSDK.SELECTED_EYE_LEFT,
+                                "right": FakeSDK.SELECTED_EYE_RIGHT}.get(msg.get("eye"))
                 return dict(ok=True, mode=mode[0])
+            if msg.get("cmd") == "fake_cal_status":    # tests: answer this from now on
+                forced[0] = msg.get("status")          # (None: the normal answer again)
+                return dict(ok=True)
+            if msg.get("cmd") in ("cal_point", "cal_compute"):
+                # As the tracker: a one-eye calibration answers "success, <that> eye".
+                status = forced[0] or {FakeSDK.SELECTED_EYE_LEFT:
+                                       FakeSDK.CALIBRATION_STATUS_SUCCESS_LEFT_EYE,
+                                       FakeSDK.SELECTED_EYE_RIGHT:
+                                       FakeSDK.CALIBRATION_STATUS_SUCCESS_RIGHT_EYE}.get(
+                    fake_mono[0], FakeSDK.CALIBRATION_STATUS_SUCCESS)
+                return dict(ok=calibration_ok(FakeSDK, status, fake_mono[0]), status=status,
+                            points=5, mode=mode[0])
             if msg.get("cmd") == "fake_look":          # tests: where the pretend eye looks
                 look[:] = [float(msg["x"]), float(msg["y"])]
             if msg.get("cmd") == "fake_distance":      # tests: the pretend eye moves
@@ -264,6 +305,10 @@ def main() -> int:
             return dict(ok=True, **area_info(dict(top_left=da.top_left, top_right=da.top_right,
                                                   bottom_left=da.bottom_left)))
         nonlocal calib, mono
+
+        def cal_ok(status) -> bool:
+            return calibration_ok(tr, status, mono)
+
         if c == "cal_enter":
             if in_cal[0]:
                 calib.leave_calibration_mode()
@@ -282,12 +327,12 @@ def main() -> int:
             x, y = float(msg["x"]), float(msg["y"])
             a = (x, y) if mono is None else (x, y, mono)
             status = calib.collect_data(*a)
-            if status != tr.CALIBRATION_STATUS_SUCCESS:      # Tobii: try a point once more
+            if not cal_ok(status):                           # Tobii: try a point once more
                 status = calib.collect_data(*a)
-            return dict(ok=status == tr.CALIBRATION_STATUS_SUCCESS, status=str(status))
+            return dict(ok=cal_ok(status), status=str(status))
         if c == "cal_compute":
             res = calib.compute_and_apply()
-            return dict(ok=res.status == tr.CALIBRATION_STATUS_SUCCESS, status=str(res.status),
+            return dict(ok=cal_ok(res.status), status=str(res.status),
                         points=len(res.calibration_points),
                         mode="both eyes" if mono is None else "one eye only")
         if c == "cal_leave":

@@ -596,6 +596,162 @@ require(len(paused) == 2 and o.counts.get("tracker_pauses") == 2
         and all(p.zest.finished() for p in o.points),
         "tracker connection lost -> the test pauses with a message until it is back")
 
+print("6c. lab report 16-17 Nov: one-eye calibration answers, settle times, early warning, map words")
+import importlib.util  # noqa: E402
+from specvis.procedure.fixation import tobii_calibration_ok  # noqa: E402
+from specvis.procedure.perimetry import H24_2_9, FIXATION_BREAK  # noqa: E402
+from specvis.procedure import maps  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location("tobii_bridge", HERE / "tools" / "tobii_bridge.py")
+tobii_bridge = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(tobii_bridge)
+SDK = tobii_bridge.FakeSDK
+for name, check in (("bridge", tobii_bridge.calibration_ok), ("app", tobii_calibration_ok)):
+    require(check(SDK, SDK.CALIBRATION_STATUS_SUCCESS, None)
+            and check(SDK, SDK.CALIBRATION_STATUS_SUCCESS_RIGHT_EYE, SDK.SELECTED_EYE_RIGHT)
+            and check(SDK, SDK.CALIBRATION_STATUS_SUCCESS_LEFT_EYE, SDK.SELECTED_EYE_LEFT)
+            and not check(SDK, SDK.CALIBRATION_STATUS_SUCCESS_LEFT_EYE, SDK.SELECTED_EYE_RIGHT)
+            and not check(SDK, SDK.CALIBRATION_STATUS_SUCCESS_RIGHT_EYE, SDK.SELECTED_EYE_LEFT)
+            and not check(SDK, SDK.CALIBRATION_STATUS_SUCCESS_RIGHT_EYE, None)
+            and not check(SDK, SDK.CALIBRATION_STATUS_FAILURE, SDK.SELECTED_EYE_RIGHT),
+            f"{name}: one-eye calibration 'success, right eye' is a success for the right eye "
+            "only; 'success, left eye' for a right-eye calibration is not")
+
+
+class PollCounter(ScriptedMonitor):
+    """Gaze from a script; counts the polls since the last key screen and before each patch."""
+    def __init__(self, gaze_for_patch=lambda i: (0.0, 0.0)):
+        super().__init__(gaze_for_patch)
+        self.polls = 0
+        self.since_screen = None
+        self.after_screen = []
+
+    def current(self):
+        self.polls += 1
+        if self.since_screen is not None:
+            self.since_screen += 1
+        return super().current()
+
+    def patch_shown(self, t0, t1):
+        if self.since_screen is not None:
+            self.after_screen.append(self.since_screen)
+            self.since_screen = None
+        super().patch_shown(t0, t1)
+
+
+class ScreenSpy(Observer):
+    """Tells the monitor when a screen closed with a key."""
+    def show_screen(self, text, marks=(), keys=("space",)):
+        out = super().show_screen(text, marks, keys)
+        self.monitor.since_screen = 0
+        return out
+
+
+def resume_polls(resume_ms):
+    mon = PollCounter()
+    spy = ScreenSpy(healthy, random.Random(3), width_mm=302.0, dist_mm=334.0)
+    spy.monitor = mon
+    spy.open(W, H, 0.5)
+    run_perimetry(PerimetrySettings(participant_id="RES", strategy=FULL_THRESHOLD, extent=H24_2_9,
+                                    screen_width_mm=302.0, viewing_distance_mm=334.0,
+                                    screen_height_mm=302.0 * 1964 / 3024,
+                                    fixation_monitoring=FIX_TRACKER, resume_delay_ms=resume_ms),
+                  spy, rng=random.Random(3), show_instructions=True, fixation_monitor=mon)
+    return mon.after_screen
+
+
+a, b = resume_polls(0.0), resume_polls(1200.0)
+require(a and b and b[0] - a[0] >= 1200 / 16.0 - 1,
+        f"after a key screen the first patch waits resume_delay_ms more with the eye on the + "
+        f"({a[0]} -> {b[0]} gaze polls of 16 ms)")
+
+
+def settle_polls(settle_ms):
+    mon = PollCounter(lambda i: (6.0, 0.0) if i % 9 == 4 else (0.0, 0.0))
+    obs = Observer(healthy, random.Random(4), width_mm=302.0, dist_mm=334.0)
+    obs.open(W, H, 0.5)
+    o = run_perimetry(PerimetrySettings(participant_id="LAS", strategy=FULL_THRESHOLD,
+                                        extent=H24_2_9, screen_width_mm=302.0,
+                                        viewing_distance_mm=334.0,
+                                        fixation_monitoring=FIX_TRACKER,
+                                        look_away_settle_ms=settle_ms),
+                      obs, rng=random.Random(4), show_instructions=False, fixation_monitor=mon)
+    return mon.polls, o
+
+
+(pa, oa), (pb, ob) = settle_polls(0.0), settle_polls(600.0)
+breaks = ob.counts["fixation_breaks"]
+require(breaks > 0 and pb - pa >= breaks * (600 / 16.0 - 1)
+        and all(p.zest.finished() for p in ob.points),
+        f"after a look away the next patch waits look_away_settle_ms with the eye back "
+        f"({breaks} breaks: {pa} -> {pb} gaze polls)")
+Flicky.n = 0
+flick_obs = ColourSpy(healthy, random.Random(5), width_mm=302.0, dist_mm=334.0)
+flick_obs.open(W, H, 0.5)
+fo = run_perimetry(PerimetrySettings(participant_id="FL2", strategy=FULL_THRESHOLD,
+                                     extent=H24_2_9, screen_width_mm=302.0,
+                                     viewing_distance_mm=334.0,
+                                     screen_height_mm=302.0 * 1964 / 3024,
+                                     fixation_monitoring=FIX_TRACKER, look_away_settle_ms=600.0,
+                                     resume_delay_ms=1200.0),
+                   flick_obs, rng=random.Random(5), show_instructions=False,
+                   fixation_monitor=Flicky())
+require(all(p.zest.finished() for p in fo.points),
+        "strict mode with a 16-ms flick every 20 samples still finishes (the settle is asked "
+        "once per patch, so flicks cannot stall it)")
+
+
+class EarlyEnd(Observer):
+    """A screen with a frame loop that honours on_frame() returning True: the wait ends."""
+    ended = 0
+
+    def wait_for_key_watching(self, keys, timeout_ms, fixation=None, clear_events=True,
+                              on_frame=None):
+        end = time.perf_counter() + 0.08
+        while on_frame is not None and time.perf_counter() < end:
+            if on_frame() is True:
+                self.ended += 1
+                return None, None
+            time.sleep(0.002)
+        return self.wait_for_key(keys, timeout_ms, fixation, clear_events)
+
+
+def early_run(gaze):
+    obs_ = EarlyEnd(healthy, random.Random(6), width_mm=302.0, dist_mm=334.0)
+    obs_.open(W, H, 0.5)
+    out = run_perimetry(PerimetrySettings(participant_id="EARLY", strategy=FULL_THRESHOLD,
+                                          extent=H24_2_9, screen_width_mm=302.0,
+                                          viewing_distance_mm=334.0,
+                                          fixation_monitoring=FIX_TRACKER),
+                        obs_, rng=random.Random(6), show_instructions=False,
+                        fixation_monitor=ScriptedMonitor(gaze))
+    return obs_, out
+
+
+early_obs, eo = early_run(lambda i: (6.0, 0.0) if i % 7 == 3 else (0.0, 0.0))
+fb = [r for r in eo.trial_rows if str(r.get("note", "")).startswith(FIXATION_BREAK)]
+# A patch answered while it was still up has no answer window to end, so not every
+# break ends one; every early end must be a break.
+require(0 < early_obs.ended <= eo.counts["fixation_breaks"] == len(fb)
+        == len(getattr(early_obs, "messages", []))
+        and all(p.zest.finished() for p in eo.points),
+        f"an eye movement during the patch ends the answer window at once "
+        f"({early_obs.ended} early ends of {len(fb)} breaks); every break is still logged "
+        "FIXATION_BREAK, warned and repeated")
+calm_obs, co = early_run(lambda i: (0.0, 0.0))
+require(calm_obs.ended == 0 and co.counts["fixation_breaks"] == 0,
+        "the eye on the + -> the answer window is never cut short")
+
+no_table = maps._names({"prior_table": "not used (pilot mode)", "settings": {"weak_contrast": 0.2}})
+with_table = maps._names({"prior_table": "normal table, 12 sessions", "settings": {}})
+require(no_table["seen"] == "seen at 20% contrast or less"
+        and no_table["weak"] == "needed more than 20% contrast"
+        and maps._names({"prior_table": "none"})["seen"] == no_table["seen"]
+        and with_table["seen"] == "seen (normal)" and with_table["weak"].startswith("weak")
+        and no_table["blind"] == with_table["blind"] == "not seen at maximum contrast",
+        "map legend: without a normal table it says the contrast cut-off, with one "
+        "'normal / worse than normal'; never 'blind'")
+
 print("7. the bridge protocol (fake bridge)")
 bridge = subprocess.Popen([sys.executable, str(HERE / "tools" / "tobii_bridge.py"), "--fake",
                            "--port", "5575", "--fake-distance-mm", "548"],
@@ -630,6 +786,21 @@ try:
     m.cal_leave()
     require(m.cal_mode == "right eye only" and res.get("mode") == "right eye only",
             f"monocular calibration of the tested eye through the bridge: {res}")
+    m.cal_enter("R")
+    good = all(m.cal_point(x, y) for x, y in TRACKER_CAL_POINTS)
+    res = m.cal_compute()
+    require(good and res["ok"] and res["status"] == "calibration_status_success_right_eye",
+            f"one-eye calibration: 'success, right eye' answers are accepted (lab 16 Nov): {res}")
+    m._cmd("fake_cal_status", status="calibration_status_success_left_eye")
+    require(not m.cal_point(0.5, 0.5) and not m.cal_compute()["ok"],
+            "a 'success, left eye' answer to a right-eye calibration is not a success")
+    m._cmd("fake_cal_status", status=None)
+    m.cal_leave()
+    m.cal_enter("L")
+    res = m.cal_compute()
+    m.cal_leave()
+    require(res["ok"] and res["status"] == "calibration_status_success_left_eye",
+            f"and the left eye's: {res}")
     m._cmd("fake_lid", mm=3.5)
     time.sleep(0.3)
     lids = m.openness_between(time.perf_counter() - 0.1, time.perf_counter())

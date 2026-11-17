@@ -33,7 +33,26 @@ _FILL = {"seen": "#CFEBDD", "weak": "#FBE2B8", "blind": "#F4C3B3", "not_finished
 _EDGE = {"seen": "#1D9E75", "weak": "#D9891A", "blind": "#C4482A", "not_finished": "#888780"}
 _TEXT = {"seen": "#0B4D39", "weak": "#6B4100", "blind": "#7A2410", "not_finished": "#444441"}
 _NAMES = {"seen": "seen (normal)", "weak": "weak (worse than normal)",
-          "blind": "blind (not seen at 100%)", "not_finished": "not finished"}
+          "blind": "not seen at maximum contrast", "not_finished": "not finished"}
+
+
+def _names(meta: Optional[dict]) -> Dict[str, str]:
+    """Legend words. Lab report 16 Nov: without a table of normal values the split is a
+    fixed contrast cut-off for every point, which a healthy eye's far points fail too --
+    so say what it is, not "normal" / "blind"."""
+    names = dict(_NAMES)
+    meta = meta or {}
+    s = meta.get("settings", {})
+    # session.json keeps the table's source at the top ("none" / "not used (pilot mode)"
+    # when there was none).
+    prior = str(meta.get("prior_table") or "")
+    if not prior or prior == "none" or prior.startswith("not used"):
+        cut = 100 * float(s.get("weak_contrast", 0.2))
+        names["seen"] = f"seen at {cut:.0f}% contrast or less"
+        names["weak"] = f"needed more than {cut:.0f}% contrast"
+    return names
+
+
 INK = "#202020"
 
 
@@ -186,7 +205,7 @@ def draw_grid_map(summary_rows: Sequence[dict], path: pathlib.Path, *,
             big = f"{-20 * math.log10(c):.0f} dB"
             small = f"{pct}  n{n}"
         elif cat == "blind":
-            big, small = "blind", f"n{n}"
+            big, small = "not seen", f"n{n}"
         elif r.get("termination") == "floor_always_seen":
             big, small = "max", f"faintest seen  n{n}"
         else:
@@ -220,14 +239,15 @@ def draw_grid_map(summary_rows: Sequence[dict], path: pathlib.Path, *,
     _heading(ax, head, sub, "#0F6E56" if valid else "#A32D2D")
     cats = [c for c in ("seen", "weak", "blind", "not_finished")
             if any((r.get("category") or "not_finished") == c for r in rows)]
-    handles = [Patch(facecolor=_FILL[c], edgecolor=_EDGE[c], label=_NAMES[c]) for c in cats]
+    names = _names(meta)
+    handles = [Patch(facecolor=_FILL[c], edgecolor=_EDGE[c], label=names[c]) for c in cats]
     if dropped_points:
         handles.append(Patch(facecolor="white", edgecolor="#B4B2A9", hatch="///",
                              label="blind spot (not tested)"))
     ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.11),
               ncol=min(5, len(handles)), frameon=False, fontsize=10)
     fig.text(0.5, 0.01, "Big number = sensitivity in contrast dB (higher = better).   "
-             "Small line = the faintest contrast seen, and patches shown.",
+             "Small line = the faintest contrast seen, and n = patches shown there.",
              ha="center", fontsize=9, color="#5F5E5A")
     fig.savefig(path, dpi=150, bbox_inches="tight", pad_inches=0.25, facecolor="white")
     plt.close(fig)
@@ -283,7 +303,7 @@ def draw_contour_map(summary_rows: Sequence[dict], path: pathlib.Path, *,
                                    zorder=3))
     if show_values:
         for x, y, db, cat in points:
-            ax.text(x, y, "blind" if cat == "blind" else f"{db:.0f}", ha="center",
+            ax.text(x, y, "not seen" if cat == "blind" else f"{db:.0f}", ha="center",
                     va="center", fontsize=9, color=INK, zorder=6,
                     bbox=dict(boxstyle="round,pad=0.18", facecolor="white", alpha=0.85,
                               edgecolor="none"))

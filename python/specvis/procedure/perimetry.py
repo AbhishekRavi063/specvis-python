@@ -273,6 +273,14 @@ class PerimetrySettings:
     #: (on top of the hold), so the lid and the eye settle first.
     blink_min_ms: float = 0.0
     post_blink_delay_ms: float = 0.0
+    #: Lab report 16 Nov (our choice): no patch straight after SPACE or after looking
+    #: back. After any screen closed with a key (start, break, pause, reminder) only the +
+    #: shows, and the eye must be on it for resume_delay_ms before the next patch. After
+    #: the eye was off the + (red +, or a trial thrown away for an eye movement) it must
+    #: be back on it for look_away_settle_ms. Both come on top of fixation_hold_ms; without
+    #: an eye tracker resume_delay_ms is a plain wait.
+    resume_delay_ms: float = 1200.0
+    look_away_settle_ms: float = 600.0
     #: Feedback to the person (our addition; Sanchez-Lopez et al. gave constant feedback
     #: on fixation): the + turns red while the eye is off it, and after a trial thrown
     #: away for an eye movement "Keep looking at the +" shows for a moment.
@@ -827,6 +835,13 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                                  on_frame=on_frame)
         return backend.wait_for_key(keys, ms, fixation=fixation, clear_events=clear_events)
 
+    # Settle time (ms) the next patch must wait, with the eye on the +, before it comes:
+    # set after key screens (resume_delay_ms) and after the eye was off the + (look_away_settle_ms).
+    pending_settle = [0.0]
+
+    def need_settle(ms: float) -> None:
+        pending_settle[0] = max(pending_settle[0], float(ms))
+
     def wait(ms: float, on_frame=None) -> None:
         key, _ = wait_key([abort_key, pause_key], ms, on_frame=on_frame)
         if key == abort_key:
@@ -837,6 +852,7 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 keys=[seen_key, abort_key])
             if key == abort_key:
                 raise Aborted
+            need_settle(settings.resume_delay_ms)
 
     def response_window() -> float:
         """SITA's timing: after a few answers the window follows this participant's
@@ -871,8 +887,12 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         # "looking away" either: the + stays as it is, the hold starts again, and when the
         # eye is back the patch waits post_blink_delay_ms more.
         DROPOUT_MS = settings.fixation_dropout_ms
-        last_on, missing, off_for, settle = None, 0.0, 0.0, 0.0
+        last_on, missing, off_for = None, 0.0, 0.0
+        settle, pending_settle[0] = pending_settle[0], 0.0
+        came_back = False
         while True:
+            if pending_settle[0] > 0:                 # e.g. P pressed during a poll below
+                settle, pending_settle[0] = max(settle, pending_settle[0]), 0.0
             trouble = monitor.problem()
             if trouble:
                 # Lab report B6: pause rather than test on without a working tracker.
@@ -884,14 +904,18 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 if key == abort_key:
                     raise Aborted
                 held = waited = 0.0
+                settle = max(settle, settings.resume_delay_ms)
                 continue
             g = monitor.current()
             if g is not None:
                 if missing > DROPOUT_MS:              # back from a blink
-                    settle = settings.post_blink_delay_ms
+                    settle = max(settle, settings.post_blink_delay_ms)
                     counts["blinks_between"] = counts.get("blinks_between", 0) + 1
                 missing = 0.0
                 if math.hypot(*g) <= settings.fixation_tolerance_deg:
+                    if last_on is False and not came_back:   # back from looking away
+                        came_back = True             # once per patch: flicks cannot stall it
+                        settle = max(settle, settings.look_away_settle_ms)
                     last_on, off_for = True, 0.0
                 else:
                     off_for += POLL_MS
@@ -924,6 +948,7 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                     raise Aborted
                 counts["fixation_reminders"] = counts.get("fixation_reminders", 0) + 1
                 waited = held = 0.0
+                settle = max(settle, settings.resume_delay_ms)
             wait(POLL_MS)
 
     def frames(ms: float) -> int:
@@ -1075,7 +1100,9 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 if not cal.get("ok"):
                     key = backend.show_screen(
                         f"Calibration did not work ({cal.get('status')}).\n\nCheck the chin "
-                        "rest and that both eyes are seen by the tracker.\n\n"
+                        "rest and that "
+                        + ("the test eye is" if "only" in str(cal.get("mode", "")) else "both eyes are")
+                        + " seen by the tracker.\n\n"
                         f"{seen_key.upper()} = go on anyway   R = calibrate again   "
                         f"{abort_key.upper()} = stop", keys=[seen_key, "r", abort_key])
                     if key == abort_key:
@@ -1316,6 +1343,11 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             wait(settings.fixation_ms)
         if watching:
             wait_for_fixation()
+        elif pending_settle[0] > 0:
+            # No tracker: a plain + only lead-in. Taken before the wait, so a pause (P)
+            # during it asks for a fresh lead-in instead of being wiped out.
+            lead_in, pending_settle[0] = pending_settle[0], 0.0
+            wait(lead_in)
         counts["presentations"] += 1
         t_on = time.perf_counter()
         monitor.current()
@@ -1338,13 +1370,33 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
 
         def watch_frame() -> None:
             state = live.update(time.perf_counter(), monitor.current())
-            fixation_colour(settings.fixation_off_colour if state == LiveFixation.OFF
-                            else settings.fixation_colour)
+            off = state == LiveFixation.OFF
+            if off:
+                need_settle(settings.look_away_settle_ms)
+            fixation_colour(settings.fixation_off_colour if off else settings.fixation_colour)
+
+        # Lab report 16 Nov: the patch is judged as soon as its gaze samples are in (a few
+        # tens of ms after it ends), not after the answer window. A clear eye movement
+        # during the patch ends the window at once, so "Keep looking at the +" comes
+        # straight away; the trial is thrown away and repeated later in any case.
+        JUDGE_AFTER_S = 0.05
+        early_break = [False, False]                 # [judged yet, broken]
+
+        def answer_frame() -> Optional[bool]:
+            watch_frame()
+            if not early_break[0] and time.perf_counter() >= t_off + JUDGE_AFTER_S:
+                early_break[0] = True
+                ok, _, f = judge_patch(monitor.between(t_on, t_off),
+                                       settings.fixation_tolerance_deg,
+                                       max_out_frac=settings.fixation_break_max_out_frac)
+                early_break[1] = (not ok) and f >= 0.5
+            return True if early_break[1] else None
 
         on_frame = watch_frame if watching else None
         if not presses:
             key, latency = wait_key([seen_key, abort_key], response_window(),
-                                    clear_events=False, on_frame=on_frame)
+                                    clear_events=False,
+                                    on_frame=answer_frame if watching else None)
             if key == abort_key:
                 raise Aborted
             if key == seen_key:
@@ -1359,6 +1411,10 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             fixated, worst, frac = judge_patch(monitor.between(t_on, t_off),
                                                settings.fixation_tolerance_deg,
                                                max_out_frac=settings.fixation_break_max_out_frac)
+            if early_break[1] and fixated:
+                # The answer window was cut short for this break: a late sample must not
+                # turn it back into a valid "not seen" the person had no time to answer.
+                fixated, frac = False, max(frac, 0.5)
             counts["gaze_checked"] += 1
             gaze_info.update(gaze_max_deg="" if math.isnan(worst) else round(worst, 2),
                              gaze_valid_pct=round(100 * frac))
@@ -1398,6 +1454,8 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 fixation_colour(settings.fixation_off_colour)
                 backend.show_message("Keep looking at the  +", 1000.0, fixation=fixation)
                 counts["fixation_feedback"] = counts.get("fixation_feedback", 0) + 1
+            if not fixated and not blink:
+                need_settle(settings.look_away_settle_ms)
 
         gap = rng.uniform(*settings.iti_ms) + (0.0 if seen else settings.miss_extra_pause_ms)
         wait(gap, on_frame)
@@ -1646,6 +1704,7 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 keys=[seen_key, abort_key])
             if key == abort_key:
                 raise Aborted
+            need_settle(settings.resume_delay_ms)
 
         for _ in range(settings.practice_trials):
             p = rng.choice(seeds or points)
@@ -1738,6 +1797,7 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                     keys=[seen_key, abort_key])
                 if key == abort_key:
                     raise Aborted
+                need_settle(settings.resume_delay_ms)
     except Aborted:
         aborted = True
     finally:

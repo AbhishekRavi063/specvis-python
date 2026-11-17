@@ -285,8 +285,8 @@ class PsychoPyBackend(StimulusBackend):
                 return key, when * 1000.0
             if limit is not None and clock.getTime() >= limit:
                 return None, None
-            if on_frame is not None:
-                on_frame()                  # e.g. turn the + red while the eye is off it
+            if on_frame is not None and on_frame() is True:
+                return None, None           # the caller ended the wait (eye left the +)
             self._draw_fixation(fixation)
             win.flip()
 

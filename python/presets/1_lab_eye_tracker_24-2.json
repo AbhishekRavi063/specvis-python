@@ -1,6 +1,6 @@
 {
   "name": "Lab: 24-2 (42 points), eye tracker, 51 cm",
-  "description": "The study setup. BenQ 24.5\" (542.3 x 305 mm, as the eye tracker has it), chin rest at 51 cm (the Tobii Pro Fusion works from 50 cm; the grid fits up to 53.2 cm). 24-2 positions without the top/bottom rows and the 2 nasal 27-deg points: 42 points, 6 deg apart. Full Threshold 4-2 staircase (OPI). Start python\\specvis.bat tracker-bridge first. The app checks the eye distance, calibrates the tracker, measures its accuracy, and gives fixation feedback. Choose the ColorCAL scale \"Lab screen\". No dithering: the faintest patch is one grey step and the seeds start in the middle of the range, both from the photometer (Lab screen: 0.1 to 32.9 dB, start 16.5 dB).",
+  "description": "The study setup. BenQ 24.5\" (542.3 x 305 mm, as the eye tracker has it), chin rest at 51 cm (the Tobii Pro Fusion works from 50 cm; the grid fits up to 53.2 cm). 24-2 positions without the top/bottom rows and the 2 nasal 27-deg points: 42 points, 6 deg apart. Full Threshold 4-2 staircase (OPI). The eye-tracker bridge starts and closes with the app (Start ReFreM, or python\\specvis.bat app). The app checks the eye distance, calibrates the tracker, measures its accuracy, and gives fixation feedback. Choose the ColorCAL scale \"Lab screen\". No dithering: the faintest patch is one grey step and the seeds start in the middle of the range, both from the photometer (Lab screen: 0.1 to 32.9 dB, start 16.5 dB).",
   "settings": {
     "screen_width_mm": 542.3,
     "viewing_distance_mm": 510.0,

@@ -349,6 +349,22 @@ class ScriptedMonitor(FixationMonitor):
         return "scripted gaze (test)"
 
 
+def tobii_calibration_ok(tr, status, eye) -> bool:
+    """Whether a Tobii calibration answer is a success. Lab report 16 Nov: a monocular
+    calibration answers "success, left/right eye", never plain "success", so comparing with
+    plain success marked every one-eye calibration as failed. ``eye`` is the eye being
+    calibrated (tr.SELECTED_EYE_*), None for both; a success for the other eye is not one.
+    The same rule as calibration_ok in tools/tobii_bridge.py (which runs without this
+    package, on Python 3.10); tests check both."""
+    if status == tr.CALIBRATION_STATUS_SUCCESS:
+        return True
+    if eye is not None and eye == getattr(tr, "SELECTED_EYE_LEFT", object()):
+        return status == getattr(tr, "CALIBRATION_STATUS_SUCCESS_LEFT_EYE", object())
+    if eye is not None and eye == getattr(tr, "SELECTED_EYE_RIGHT", object()):
+        return status == getattr(tr, "CALIBRATION_STATUS_SUCCESS_RIGHT_EYE", object())
+    return False
+
+
 class TobiiMonitor(FixationMonitor):
     """A Tobii Pro screen-based eye tracker (Pro Fusion) via the Tobii Pro SDK.
 
@@ -604,10 +620,11 @@ class TobiiMonitor(FixationMonitor):
             return bool(self._cmd("cal_point", x=x, y=y).get("ok"))
         tr = self._tr
         args = (x, y) if getattr(self, "_cal_eye", None) is None else (x, y, self._cal_eye)
+        eye = getattr(self, "_cal_eye", None)
         status = self._calib.collect_data(*args)
-        if status != tr.CALIBRATION_STATUS_SUCCESS:
+        if not tobii_calibration_ok(tr, status, eye):
             status = self._calib.collect_data(*args)
-        return status == tr.CALIBRATION_STATUS_SUCCESS
+        return tobii_calibration_ok(tr, status, eye)
 
     def cal_compute(self) -> dict:
         mode = getattr(self, "cal_mode", "both eyes")
@@ -616,7 +633,7 @@ class TobiiMonitor(FixationMonitor):
             return dict(ok=bool(r.get("ok")), status=r.get("status", r.get("error", "")),
                         points=r.get("points", 0), mode=mode)
         res = self._calib.compute_and_apply()
-        return dict(ok=res.status == self._tr.CALIBRATION_STATUS_SUCCESS,
+        return dict(ok=tobii_calibration_ok(self._tr, res.status, getattr(self, "_cal_eye", None)),
                     status=str(res.status), points=len(res.calibration_points), mode=mode)
 
     def cal_leave(self) -> None:
