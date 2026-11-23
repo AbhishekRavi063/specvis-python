@@ -155,4 +155,17 @@ require(o.counts["gaze_checked"] > 0 and o.counts["fixation_breaks"] == 0
         "checks needed")
 require("bridge" in o.fixation_monitor, f"recorded: {o.fixation_monitor}")
 
+print("uniformity: placement problems are flagged, an even edge dimming is not")
+lab = {"centre": 25.558, "top": 22.362, "bottom": 22.393, "top-left": 21.805,
+       "top-right": 21.755, "bottom-left": 21.937, "bottom-right": 24.471}  # lab, 23 Nov
+notes = photometry.uniformity_warnings(
+    lab, {"centre": [25.510, 25.579, 25.586], "bottom-left": [21.469, 21.755, 22.588]})
+require(len(notes) == 2 and notes[0].startswith("bottom-left")
+        and notes[1].startswith("bottom-right"),
+        "the lab's moved meter (bottom-left) and odd corner (bottom-right) are flagged")
+even = {"centre": 10.0, "top": 8.8, "top-left": 8.6, "top-right": 8.7, "bottom-left": 8.65,
+        "bottom-right": 8.55}
+require(photometry.uniformity_warnings(even, {"centre": [10.0, 10.02, 9.99]}) == [],
+        "a screen 13 % dimmer at every edge: nothing flagged")
+
 sys.exit(0 if ok else 1)

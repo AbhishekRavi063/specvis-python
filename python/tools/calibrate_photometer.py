@@ -23,8 +23,10 @@ What it does:
   1. greys 0, 5, ... 60, then 75, 90 ... 255, full screen, each read --repeats times
      (the screen curve; the dark end bends most);
   2. every grey level within 8 of the background (the faintest step lives there);
-  3. optionally (--uniformity) the background at 7 places on the screen, moving the
-     meter when asked;
+  3. optionally (--uniformity) the background at the 9 places of screen_uniformity.py
+     (centre, top, bottom, left, right and the corners): a red ring shows where to put
+     the meter, ENTER measures, R repeats the previous place, ESC ends the places early
+     (the scale is still saved);
   4. saves the readings (python/calibration/photometer/*.csv and *.json) and a luminance
      scale, and prints the dB range and its middle (the staircase seeds' start).
 """
@@ -49,7 +51,7 @@ from specvis.core import photometry  # noqa: E402
 from specvis.core.luminance import MEASUREMENT_POINTS, LuminanceCalibration  # noqa: E402
 
 OUT_DIR = HERE / "calibration" / "photometer"
-PLACES = ["centre", "top-left", "top-right", "bottom-left", "bottom-right", "left", "right"]
+PLACES = list(photometry.PLACES)          # the same 9 places as screen_uniformity.py
 
 
 class SimulatedMeter:
@@ -132,6 +134,11 @@ def _keep_screen_awake(on: bool) -> None:
 def auto_zero(meter, warmup_min: float, simulated: bool = False) -> None:
     """Zero-calibrate the ColorCAL with the monitor switched off, then let it warm up."""
     print("\nAUTOMATIC ZERO CALIBRATION")
+    print("  The screen will go DARK for about 10 s: keep the cap ON (or the meter flat\n"
+          "  against the screen). It comes back by itself, then warms up.")
+    print("  The ColorCAL must see NO light for this: keep it FLAT against the screen (on its\n"
+          "  tripod) or put its cap / a dark cloth over it. Room light reaching it makes the\n"
+          "  zero fail (lab, 23 Nov: 9 cd/m2 'in the dark' with the meter held in the air).")
     if simulated:
         print("  (simulated meter: monitor not switched, no waiting)")
         meter.zero()
@@ -149,7 +156,9 @@ def auto_zero(meter, warmup_min: float, simulated: bool = False) -> None:
         input("  Switch the monitor back ON, then press Enter... ")
     _keep_screen_awake(True)
     if not ok:
-        raise SystemExit("Zero calibration failed: is any light reaching the sensor?")
+        raise SystemExit(f"Zero calibration failed: the sensor still read {dark:.3f} cd/m2 "
+                         "with the monitor off. Cap it (or put it flat against the screen) "
+                         "and run again.")
     end = time.time() + warmup_min * 60
     while time.time() < end:
         left = (end - time.time()) / 60
@@ -273,7 +282,10 @@ def main() -> int:
     ap.add_argument("--settle", type=float, default=1.0,
                     help="seconds to wait after each change before reading")
     ap.add_argument("--uniformity", action="store_true",
-                    help="also read the background at 7 places (you move the meter)")
+                    help="also read the background at 9 places (you move the meter "
+                         "to a red ring on the screen)")
+    ap.add_argument("--width-mm", type=float, default=None,
+                    help="screen width in mm, for the ring size (default: the app's)")
     ap.add_argument("--simulate", action="store_true", help="no meter: a pretend screen")
     ap.add_argument("--windowed", action="store_true", help="for trying the tool only")
     ap.add_argument("--no-wait", action="store_true", help="do not wait for SPACE (trying)")
@@ -349,6 +361,7 @@ def main() -> int:
 
     rows = []
     places = {}
+    spreads = {}
     bg_level = None
     stopped = False
     try:
@@ -376,15 +389,26 @@ def main() -> int:
         bg_level = photometry.background_level([r[0] for r in rows], [r[1] for r in rows],
                                                args.background_cd)
 
-        if args.uniformity:
-            for place in PLACES:
-                say(f"Move the ColorCAL to the {place.upper()} of the screen\n"
-                    "(about 3 cm in from the edges), then press SPACE.")
-                m, _ = measure(bg_level)
-                places[place] = m
-                print(f"  background at {place:12s}: {m:.4f} cd/m2", flush=True)
     except SystemExit:
         stopped = True
+    if args.uniformity and not stopped:
+        sys.path.insert(0, str(HERE / "tools"))
+        from specvis.procedure.perimetry import PerimetrySettings
+        from uniformity_targets import PsychoUI, measure_places
+        w_mm = args.width_mm or PerimetrySettings().screen_width_mm
+        ui = PsychoUI(win, w_mm, 60.0, auto=args.no_wait)
+        h_mm = w_mm * ui.size[1] / ui.size[0]
+        fx, fy = photometry.place_fractions()
+        ui.set_ring_mm(2 * photometry.ring_radius_mm(60.0, w_mm, h_mm, PLACES, fx, fy))
+        print(f"\nBackground at {len(PLACES)} places (screen taken as {w_mm:.1f} mm wide):")
+        spreads, ended = measure_places(ui, meter, PLACES, fx, fy, bg_level,
+                                        repeats=args.repeats, settle_s=max(args.settle, 1.5))
+        places = {p: statistics.mean(v) for p, v in spreads.items()}
+        if ended:
+            print(f"  places ended early: {len(places)} of {len(PLACES)} measured")
+        if places and "centre" not in places:
+            print("  (no centre reading: the places cannot be compared; not saved)")
+            places, spreads = {}, {}
     _keep_screen_awake(False)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -465,6 +489,8 @@ def main() -> int:
     if places:
         print(f"background uniformity: largest difference from the centre "
               f"{s['max_difference_pct']:.1f} %")
+        for note in photometry.uniformity_warnings(places, spreads):
+            print("CHECK:", note)
     print(f"readings saved: {stem}_readings.csv / _summary.json", flush=True)
     _close(win)
     return 0

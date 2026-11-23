@@ -12,6 +12,7 @@
 #     python/specvis.sh test      run every check in python/tests
 #     python/specvis.sh display   measure the screen: refresh rate, reversal rates, drops
 #     python/specvis.sh calibrate measure the screen with the ColorCAL -> a luminance scale
+#     python/specvis.sh uniformity screen evenness: one grey at 9 places, ring targets (ColorCAL)
 #     python/specvis.sh preflight check the screen, ColorCAL, scale and eye tracker
 #     python/specvis.sh tracker-setup   once: Python 3.10 env with the Tobii SDK
 #     python/specvis.sh tracker-bridge  before a session with the eye tracker (leave open)
@@ -77,6 +78,11 @@ case "${1:-}" in
         shift
         exec "$PY" "$HERE/tools/measure_display.py" "$@"
         ;;
+    uniformity)
+        need_venv
+        shift
+        exec "$PY" "$HERE/tools/screen_uniformity.py" "$@"
+        ;;
     calibrate)
         need_venv
         shift
@@ -120,7 +126,7 @@ case "${1:-}" in
         echo "Done. Try:  python/specvis.sh test"
         ;;
     *)
-        echo "usage: python/specvis.sh {app|app-simple|run|perimetry|block2|build-table|redraw-maps|test|display|calibrate|preflight|tracker-setup|tracker-bridge|tracker-display|setup}" >&2
+        echo "usage: python/specvis.sh {app|app-simple|run|perimetry|block2|build-table|redraw-maps|test|display|calibrate|uniformity|preflight|tracker-setup|tracker-bridge|tracker-display|setup}" >&2
         exit 2
         ;;
 esac
