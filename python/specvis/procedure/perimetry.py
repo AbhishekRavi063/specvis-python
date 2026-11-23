@@ -146,7 +146,13 @@ ZEST_TRIAL, PROBE_TRIAL = "zest", "zest_probe_max"
 STAIRCASE_TRIAL = "staircase"             # a Full Threshold (4-2) trial
 BLANK, HIGH, BLIND_SPOT, PRACTICE = "blank_catch", "high_catch", "blind_spot", "practice"
 BLIND_SPOT_SEARCH, SEARCH_CHECK = "blind_spot_search", "blind_spot_search_check"
+BLIND_SPOT_MAP, BLIND_SPOT_VERIFY = "blind_spot_map", "blind_spot_verify"
 FIXATION_BREAK = "FIXATION_BREAK"
+#: The mapped blind spot must be at least this big and at most this big (half widths,
+#: deg) to be believed. Our suggestion: the textbook blind spot is ~5.5 x 7.5 deg, and
+#: the oval of a 2-deg patch's centre is smaller by about the patch radius.
+BLIND_SPOT_MIN_HALF, BLIND_SPOT_MAX_HALF = 0.75, 6.0
+BLIND_SPOT_MIN_EDGES = 6                  # of the 8 directions, for an oval
 
 # Strategies
 SITA_FAST, ZEST_FULL, FULL_THRESHOLD = "sita_fast", "zest", "full_threshold"
@@ -221,6 +227,38 @@ class PerimetrySettings:
     blind_spot_search_step_deg: float = 1.5   # spacing of the positions tried
     blind_spot_search_repeats: int = 2        # a position must be missed this many times
     blind_spot_search_attempts: int = 3       # searches before the average is used
+    #: Map this person's own blind spot (23 Nov, our addition). After the search finds a
+    #: point inside it, the patch steps outward from there in 8 directions until it is
+    #: seen twice running; an oval through those 8 edges gives the blind spot's centre
+    #: and size, and the centre is checked (missed every time). The oval is where THIS
+    #: patch's centre is missed, so it is smaller than the anatomical blind spot by about
+    #: the patch radius -- exactly the region a grid patch cannot be seen in. Then:
+    #: grid points inside the oval (+ BLIND_SPOT_MARGIN) are left out, instead of the
+    #: average box; the blind-spot checks and the probe block use its centre. Runs with
+    #: any fixation monitor. Saved per participant and eye (python/output, never pushed):
+    #: a later session only checks the saved centre and maps again if it is seen.
+    blind_spot_map: bool = False
+    blind_spot_map_start_deg: float = 1.0     # first step out from the point found
+    blind_spot_map_step_deg: float = 0.5
+    blind_spot_map_max_deg: float = 7.0       # no edge by here: that direction failed
+    blind_spot_verify_repeats: int = 3        # the centre must be missed this many times
+    #: The blind-spot probe block (23 Nov, our design, before the test): two flashes marked
+    #: 1 and 2, the patch in one of them, at the mapped blind spot's centre (and a few at
+    #: the mirror point on the other side, as a check the task works). The person says
+    #: which flash had it (guessing if need be), then whether they saw anything. Above
+    #: chance there = light reaching the eye's seeing retina (scatter) or more; the
+    #: healthy blind spot is the control for patients' blind-field answers. Needs
+    #: blind_spot_map. Contrasts: dB below the strongest the screen can show.
+    blind_spot_probe: bool = False
+    blind_spot_probe_db_below_max: Tuple[float, ...] = (0.0, 6.0, 12.0, 18.0)
+    blind_spot_probe_trials: int = 20         # per contrast, at the blind spot
+    blind_spot_probe_control_trials: int = 5  # per contrast, at the mirror point
+    #: Stricter than the test's: the blind spot is only ~5 x 7 deg, so a small eye
+    #: movement puts the patch on seeing retina. Trials outside it are repeated.
+    blind_spot_probe_tolerance_deg: float = 1.5
+    blind_spot_probe_cue_ms: float = 400.0    # "1" / "2" shown before each flash
+    blind_spot_probe_gap_ms: float = 500.0    # between the two flashes
+    blind_spot_probe_break_every: int = 50
     max_false_alarm_rate: float = 0.15
     max_miss_rate: float = 0.10
     max_fixation_loss_rate: float = 0.20
@@ -377,6 +415,20 @@ class PerimetrySettings:
                 or self.blind_spot_search_step_deg <= 0):
             raise SessionError("the blind-spot search needs at least 1 repeat, 1 attempt "
                                "and a positive step")
+        if self.blind_spot_map and (self.blind_spot_map_step_deg <= 0
+                                    or self.blind_spot_map_start_deg <= 0
+                                    or self.blind_spot_map_max_deg < self.blind_spot_map_start_deg
+                                    or self.blind_spot_verify_repeats < 1):
+            raise SessionError("the blind-spot map needs positive steps, a largest step "
+                               "beyond the first and at least 1 check")
+        if self.blind_spot_probe:
+            if not self.blind_spot_map:
+                raise SessionError("the blind-spot probe block needs the blind-spot map")
+            if (not self.blind_spot_probe_db_below_max or self.blind_spot_probe_trials < 1
+                    or self.blind_spot_probe_control_trials < 0
+                    or any(db < 0 for db in self.blind_spot_probe_db_below_max)):
+                raise SessionError("the blind-spot probe needs contrasts (dB below the "
+                                   "strongest, 0 or more) and at least 1 trial each")
 
     @property
     def watches_gaze(self) -> bool:
@@ -512,6 +564,88 @@ def grid_points(settings: PerimetrySettings) -> Tuple[List[Tuple[int, int]],
     return kept, dropped
 
 
+#: An upright oval in field degrees: (centre x, centre y, half width, half height).
+Oval = Tuple[float, float, float, float]
+
+
+def fit_blind_spot_oval(edges: Sequence[Tuple[float, float]]) -> Optional[Oval]:
+    """The upright oval through the blind spot's edge points (least squares).
+
+    Fits A x^2 + C y^2 + D x + E y = 1, which is an upright ellipse when A and C are
+    both positive. Needs at least 4 points; returns None when they make no ellipse.
+    """
+    if len(edges) < 4:
+        return None
+    pts = np.asarray(edges, dtype=float)
+    x, y = pts[:, 0], pts[:, 1]
+    # Centred first: the blind spot sits ~15 deg out, and the fit is better conditioned
+    # around its own middle.
+    mx, my = float(x.mean()), float(y.mean())
+    u, v = x - mx, y - my
+    design = np.column_stack([u * u, v * v, u, v])
+    if np.linalg.matrix_rank(design) < 4:
+        return None                                   # e.g. all on one line
+    try:
+        (a_, c_, d_, e_), *_ = np.linalg.lstsq(design, np.ones_like(u), rcond=None)
+    except np.linalg.LinAlgError:
+        return None
+    if a_ <= 0 or c_ <= 0:
+        return None
+    cu, cv = -d_ / (2 * a_), -e_ / (2 * c_)
+    rhs = 1 + d_ * d_ / (4 * a_) + e_ * e_ / (4 * c_)
+    if rhs <= 0:
+        return None
+    return (round(float(mx + cu), 3), round(float(my + cv), 3),
+            round(float(math.sqrt(rhs / a_)), 3), round(float(math.sqrt(rhs / c_)), 3))
+
+
+def in_oval(x: float, y: float, oval: Oval, margin: float = 0.0) -> bool:
+    cx, cy, hw, hh = oval
+    return ((x - cx) / (hw + margin)) ** 2 + ((y - cy) / (hh + margin)) ** 2 <= 1.0
+
+
+def split_by_oval(positions: Sequence[Tuple[float, float]], oval: Oval,
+                  margin: float = BLIND_SPOT_MARGIN
+                  ) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]:
+    """(kept, dropped): a grid point is left out when its patch centre is inside this
+    person's blind-spot oval widened by ``margin`` (the same margin as the average box)."""
+    kept, dropped = [], []
+    for x, y in sorted(positions, key=lambda p: (math.hypot(*p), p)):
+        (dropped if in_oval(x, y, oval, margin) else kept).append((x, y))
+    return kept, dropped
+
+
+def binomial_p_at_least(k: int, n: int, p: float = 0.5) -> float:
+    """One-sided: the chance of k or more right out of n by guessing alone."""
+    if n <= 0:
+        return float("nan")
+    return float(sum(math.comb(n, i) * p ** i * (1 - p) ** (n - i) for i in range(k, n + 1)))
+
+
+def probe_summary(rows: Sequence[dict]) -> List[dict]:
+    """The probe block per place and contrast: how often the right flash was picked
+    (chance 50 %), with and without the person saying they saw something. Trials thrown
+    away for an eye movement are left out."""
+    groups: Dict[Tuple[str, float], List[dict]] = {}
+    for r in rows:
+        if r.get("gaze_ok", 1):
+            groups.setdefault((r["location"], float(r["db_below_max"])), []).append(r)
+    out = []
+    for (location, db), rs in sorted(groups.items(), key=lambda kv: (kv[0][0] != "blind_spot",
+                                                                    kv[0][1])):
+        n, k = len(rs), sum(int(r["correct"]) for r in rs)
+        unaware = [r for r in rs if not int(r["aware"])]
+        nu, ku = len(unaware), sum(int(r["correct"]) for r in unaware)
+        out.append(dict(
+            location=location, db_below_max=db, contrast=rs[0]["contrast"], trials=n,
+            correct=k, pct_correct=round(100.0 * k / n, 1),
+            p_above_chance=round(binomial_p_at_least(k, n), 4),
+            said_seen=n - nu, unaware_trials=nu, unaware_correct=ku,
+            unaware_pct_correct=round(100.0 * ku / nu, 1) if nu else "",
+            unaware_p_above_chance=round(binomial_p_at_least(ku, nu), 4) if nu else ""))
+    return out
+
+
 @dataclass
 class PerimetryOutcome:
     settings: PerimetrySettings
@@ -539,6 +673,12 @@ class PerimetryOutcome:
     blind_spot_search: Dict[str, object] = field(default_factory=dict)
     #: The measurable contrast range at this background and the seeds' start (dB).
     contrast_range: Dict[str, object] = field(default_factory=dict)
+    #: This person's mapped blind spot (status, centre, size, edges): what is saved for
+    #: their later sessions. Empty when the map was off.
+    blind_spot_map: Dict[str, object] = field(default_factory=dict)
+    #: The probe block's trials and its summary per place and contrast.
+    probe_rows: List[dict] = field(default_factory=list)
+    probe_status: str = ""
 
     @property
     def early_press_rate(self) -> float:
@@ -714,6 +854,9 @@ def settings_from_dict(values: dict) -> PerimetrySettings:
         kwargs["iti_ms"] = tuple(kwargs["iti_ms"])
     if "seed_points" in kwargs:
         kwargs["seed_points"] = tuple(tuple(p) for p in kwargs["seed_points"])
+    if "blind_spot_probe_db_below_max" in kwargs:
+        kwargs["blind_spot_probe_db_below_max"] = tuple(
+            float(v) for v in kwargs["blind_spot_probe_db_below_max"])
     return PerimetrySettings(**kwargs)
 
 
@@ -727,11 +870,13 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                   rng: Optional[random.Random] = None,
                   show_instructions: bool = True,
                   on_trial: Optional[Callable[[dict], None]] = None,
-                  fixation_monitor: Optional[FixationMonitor] = None) -> PerimetryOutcome:
+                  fixation_monitor: Optional[FixationMonitor] = None,
+                  saved_blind_spot: Optional[dict] = None) -> PerimetryOutcome:
     """Run one eye on an already-open backend and return what it produced.
 
     ``fixation_monitor`` overrides the one ``settings.fixation_monitoring`` names (tests
-    pass a scripted one)."""
+    pass a scripted one). ``saved_blind_spot``: this person's blind-spot map from an
+    earlier session (``outcome.blind_spot_map``), checked and reused when it holds."""
     settings.validate()
     seen_key, abort_key, pause_key = settings.answer_key, settings.cancel_key, settings.pause_key
     calibration = calibration or default_calibration(settings)
@@ -812,16 +957,22 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
 
     # -- state -------------------------------------------------------------------------
     seed_set = {(float(x), float(y)) for x, y in seeds_for(settings)}
-    points = []
-    for i, (x, y) in enumerate(kept):
-        is_seed = (float(x), float(y)) in seed_set
-        if settings.strategy == FULL_THRESHOLD:
-            finder = FullThresholdLocation(ft_settings, ft_start, renderable_floor=floor)
-        else:
-            finder = ZestLocationThreshold(zest_settings_for(settings, is_seed),
-                                           renderable_floor=floor)
-        points.append(PerimetryPoint(i, float(x), float(y), finder, seed=is_seed))
+
+    def make_points(positions) -> List[PerimetryPoint]:
+        made = []
+        for i, (x, y) in enumerate(positions):
+            is_seed = (float(x), float(y)) in seed_set
+            if settings.strategy == FULL_THRESHOLD:
+                finder = FullThresholdLocation(ft_settings, ft_start, renderable_floor=floor)
+            else:
+                finder = ZestLocationThreshold(zest_settings_for(settings, is_seed),
+                                               renderable_floor=floor)
+            made.append(PerimetryPoint(i, float(x), float(y), finder, seed=is_seed))
+        return made
+
+    points = make_points(kept)
     seeds = [p for p in points if p.seed]
+    all_positions = list(kept) + list(dropped)      # before any blind spot is left out
     counts = dict(trials=0, blank=0, false_alarms=0, high=0, misses=0, blind_spot=0,
                   blind_spot_seen=0, dropped_frames=0, presentations=0, early_presses=0,
                   retests=0, gaze_checked=0, fixation_breaks=0)
@@ -1679,6 +1830,299 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             if key == abort_key:
                 raise Aborted
 
+    # -- this person's blind spot: mapped (or a saved map checked), then used ---------------
+    blind_spot_map: Dict[str, object] = {}
+    half_x = math.degrees(math.atan(settings.screen_width_mm / 2.0 / d))
+    half_y = math.degrees(math.atan(settings.screen_width_mm * height_px / width_px / 2.0 / d))
+    edge_room = settings.diameter_degrees / 2.0         # the whole patch stays on the screen
+
+    def flash(kind: str, x: float, y: float, note: str) -> Optional[bool]:
+        """One strong patch; an eye movement repeats it (up to 3 times, then unknown)."""
+        for _ in range(3):
+            seen, rt = present(texture(x, y, settings.blind_spot_contrast))
+            log(kind, None, x, y, settings.blind_spot_contrast, bool(seen), rt,
+                note + (" " + FIXATION_BREAK if seen is None else ""))
+            if seen is not None:
+                return seen
+        return None
+
+    def keep_pressing() -> None:
+        """A strong patch where the person can see (the other side), now and then, so a
+        map made mostly of misses still keeps them answering."""
+        pool = [p for p in points if p.x_deg * settings.temporal_sign < 0] or points
+        q = rng.choice(pool)
+        seen, rt = present(texture(q.x_deg, q.y_deg, settings.high_contrast))
+        log(SEARCH_CHECK, None, q.x_deg, q.y_deg, settings.high_contrast, bool(seen), rt,
+            "map: strong patch on the other side")
+
+    def map_edges(cx: float, cy: float, guess: Optional[Oval] = None) -> List[dict]:
+        """From a point inside the blind spot, step outward in 8 directions until the
+        patch is seen twice running; the edge is half way back to the last miss. With a
+        first oval (``guess``), each direction starts 1 deg inside its expected edge
+        instead of near the centre: the same edges, fewer flashes."""
+        flashes = [0]
+        step = settings.blind_spot_map_step_deg
+
+        def walk(angle: int, ux: float, uy: float, start: float,
+                 inside: float) -> Tuple[Optional[float], bool]:
+            """(edge, seen at the very first step). ``inside``: known missed up to here.
+            Missed all the way out to the largest step counts in ``blind_out``."""
+            last_missed, r = inside, start
+            while r <= settings.blind_spot_map_max_deg + 1e-9:
+                x, y = round(cx + ux * r, 3), round(cy + uy * r, 3)
+                if abs(x) > half_x - edge_room or abs(y) > half_y - edge_room:
+                    return None, False                    # off the screen: no edge here
+                seen = flash(BLIND_SPOT_MAP, x, y, f"direction {angle}")
+                flashes[0] += 1
+                if flashes[0] % 6 == 0:
+                    keep_pressing()
+                if seen and flash(BLIND_SPOT_MAP, x, y, f"direction {angle}, again"):
+                    return (last_missed + r) / 2.0, r == start
+                if seen is False:
+                    last_missed = r
+                r = round(r + step, 6)
+            blind_out[0] += 1
+            return None, False
+
+        edges, blind_out = [], [0]
+        for k in range(8):
+            if blind_out[0] >= 2:
+                # Missed all the way out in 2 directions: not a blind spot but a blind
+                # area (hemianopia on this side?). Stop: more would be minutes of misses.
+                edges.append(dict(direction_deg=45 * k, edge_deg=None, xy=None,
+                                  note="not tried: the area around looked blind"))
+                continue
+            angle = 45 * k
+            ux, uy = math.cos(math.radians(angle)), math.sin(math.radians(angle))
+            start = settings.blind_spot_map_start_deg
+            if guess is not None:
+                expected = 1.0 / math.hypot(ux / guess[2], uy / guess[3])
+                start = max(start, round((expected - 1.0) / step) * step)
+            edge, at_once = walk(angle, ux, uy, start, start - step)
+            if at_once and start > settings.blind_spot_map_start_deg:
+                # Seen where the guess said it would still be missed: walk from the middle.
+                edge, _ = walk(angle, ux, uy, settings.blind_spot_map_start_deg, 0.0)
+            elif at_once:
+                edge = start / 2.0          # seen at the first step: the edge is nearer still
+            edges.append(dict(direction_deg=angle, edge_deg=edge,
+                              xy=None if edge is None else [round(cx + ux * edge, 3),
+                                                            round(cy + uy * edge, 3)]))
+        return edges
+
+    def centre_missed(x: float, y: float) -> bool:
+        """The check: a strong patch at the centre, missed. With 3 or more checks one
+        press is forgiven (people press by mistake now and then; a centre that can
+        really be seen is seen nearly every time); an eye movement counts as a press."""
+        n = settings.blind_spot_verify_repeats
+        pressed = 0
+        for i in range(n):
+            if flash(BLIND_SPOT_VERIFY, x, y, f"check {i + 1}") is not False:
+                pressed += 1
+                if pressed > (1 if n >= 3 else 0):
+                    return False
+        return True
+
+    def use_oval(oval: Oval) -> None:
+        """Leave out this person's own blind-spot points; the checks go to its centre."""
+        nonlocal kept, dropped, blind_spot_xy
+        kept, dropped = split_by_oval(all_positions, oval)
+        points[:] = make_points(kept)
+        seeds[:] = [p for p in points if p.seed]
+        blind_spot_xy = (oval[0], oval[1])
+
+    def map_blind_spot() -> Tuple[Optional[Oval], str, List[dict]]:
+        """Search, map the edges, fit the oval, check its centre."""
+        search_blind_spot()
+        found = search.get("found_xy")
+        if search.get("blind_spot_side_not_seen"):
+            # A blind half around the blind spot: no edge would ever be seen (minutes of
+            # misses for nothing). Map the other eye, whose blind spot is on the seeing side.
+            return None, "the blind spot's side looked blind (hemianopia?)", []
+        if not found:
+            return None, "no blind spot found by the search", []
+        def edges_and_oval(cx, cy, guess=None):
+            edges = map_edges(cx, cy, guess)
+            got = [tuple(e["xy"]) for e in edges if e["xy"] is not None]
+            if any(e.get("note") for e in edges):
+                return edges, None, ("missed all the way out in 2 directions: the area "
+                                     "around the blind spot looks blind (hemianopia?)")
+            if len(got) < BLIND_SPOT_MIN_EDGES:
+                return edges, None, f"edges found in only {len(got)} of 8 directions"
+            oval = fit_blind_spot_oval(got)
+            return edges, oval, ("" if oval is not None else "the edges make no oval")
+
+        edges, oval, why = edges_and_oval(*found)
+        if oval is None:
+            return None, why, edges
+        # The search's point can sit near an edge (the average position often does):
+        # then map once more from the oval's centre, so every direction gets steps.
+        if math.hypot(oval[0] - found[0], oval[1] - found[1]) > settings.blind_spot_map_step_deg:
+            first = edges
+            edges, oval, why = edges_and_oval(oval[0], oval[1], oval)
+            if oval is None:
+                return None, why, first + edges
+        if not all(BLIND_SPOT_MIN_HALF <= h <= BLIND_SPOT_MAX_HALF for h in oval[2:]):
+            return None, (f"implausible size ({2 * oval[2]:.1f} x {2 * oval[3]:.1f} deg)"), edges
+        if math.hypot(oval[0] - found[0], oval[1] - found[1]) > BLIND_SPOT_MAX_HALF:
+            return None, "the oval's centre is far from the point found", edges
+        if not centre_missed(oval[0], oval[1]):
+            return None, "the oval's centre was seen", edges
+        return oval, "", edges
+
+    def locate_blind_spot() -> None:
+        """This person's blind spot: a saved map whose centre is still missed, or a new
+        map. Without one (not found, or a blind half of the field around it) the
+        average box and position stay, and the map says why."""
+        saved = saved_blind_spot or {}
+        if (saved.get("status") in ("mapped", "reused") and saved.get("eye") == settings.eye
+                and abs(float(saved.get("patch_diameter_deg", -1)) - settings.diameter_degrees)
+                < 1e-6):
+            cx, cy = saved["centre_xy"]
+            if centre_missed(cx, cy):
+                oval = (float(cx), float(cy), float(saved["half_width_deg"]),
+                        float(saved["half_height_deg"]))
+                blind_spot_map.update({k: v for k, v in saved.items() if k != "history"})
+                blind_spot_map.update(status="reused", mapped_on=saved.get("mapped_on"),
+                                      checked_on=time.strftime("%Y-%m-%d %H:%M"))
+                use_oval(oval)
+                return
+            blind_spot_map["saved_map_failed_check"] = saved.get("mapped_on", "?")
+        attempts, why, edges, oval = 0, "", [], None
+        while True:
+            attempts += 1
+            oval, why, edges = map_blind_spot()
+            if oval is not None or attempts >= 2:
+                break
+            key = backend.show_screen(
+                f"The blind spot could not be mapped: {why}.\n\n"
+                "Check the other eye is FULLY covered, the chin rest, and that the "
+                "participant keeps looking at the  +.\n\n"
+                f"R = map again     {seen_key.upper()} = go on with the average position   "
+                f"({abort_key.upper()} stops)", keys=[seen_key, "r", abort_key])
+            if key == abort_key:
+                raise Aborted
+            if key != "r":
+                break
+        blind_spot_map.update(
+            participant_id=settings.participant_id, eye=settings.eye, attempts=attempts,
+            edges=edges, patch_diameter_deg=settings.diameter_degrees,
+            contrast=settings.blind_spot_contrast,
+            viewing_distance_mm=settings.viewing_distance_mm,
+            step_deg=settings.blind_spot_map_step_deg)
+        if oval is None:
+            blind_spot_map.update(status="not mapped: used the average", reason=why)
+            return
+        blind_spot_map.update(status="mapped", mapped_on=time.strftime("%Y-%m-%d %H:%M"),
+                              centre_xy=[oval[0], oval[1]], half_width_deg=oval[2],
+                              half_height_deg=oval[3])
+        use_oval(oval)
+
+    # -- the probe block: two flashes, the patch in one, at the blind spot -----------------
+    probe_rows: List[dict] = []
+    probe_status = [""]
+
+    def probe_interval(tex: Texture, label: str) -> Tuple[bool, float]:
+        """One marked flash; (eye stayed on the +, largest offset)."""
+        if watching:
+            wait_for_fixation()
+        elif pending_settle[0] > 0:
+            lead_in, pending_settle[0] = pending_settle[0], 0.0
+            wait(lead_in)
+        backend.show_message(label, settings.blind_spot_probe_cue_ms, fixation=fixation)
+        counts["presentations"] += 1
+        t_on = time.perf_counter()
+        monitor.current()
+        report = backend.present_train([tex], 0, stim_frames, fixation=fixation,
+                                       response_keys=[abort_key])
+        monitor.current()
+        t_off = time.perf_counter()
+        monitor.patch_shown(t_on, t_off)
+        counts["dropped_frames"] += report.dropped_frames
+        if any(k == abort_key for k, _ in report.keys):
+            raise Aborted
+        if not watching:
+            return True, float("nan")
+        ok, worst, _ = judge_patch(monitor.between(t_on, t_off),
+                                   settings.blind_spot_probe_tolerance_deg,
+                                   max_out_frac=settings.fixation_break_max_out_frac)
+        return ok, worst
+
+    def ask(text: str, keys: Sequence[str]) -> str:
+        key = backend.show_screen(text, keys=list(keys) + [abort_key])
+        if key == abort_key:
+            raise Aborted
+        return key
+
+    def run_probe() -> None:
+        if not blind_spot_map.get("centre_xy"):
+            probe_status[0] = "skipped: this person's blind spot was not mapped"
+            return
+        cx, cy = blind_spot_map["centre_xy"]
+        strongest = float(db_range["strongest_contrast"])
+        levels = [(float(db), strongest * 10 ** (-float(db) / 20.0))
+                  for db in settings.blind_spot_probe_db_below_max]
+        plan = ([("blind_spot", cx, cy, db, c) for db, c in levels
+                 for _ in range(settings.blind_spot_probe_trials)] +
+                [("control", -cx, cy, db, c) for db, c in levels
+                 for _ in range(settings.blind_spot_probe_control_trials)])
+        rng.shuffle(plan)
+        ask("A short extra test.\n\nKeep looking at the  +  all the time.\n"
+            "You will see '1', a flash, then '2', a flash.\n"
+            "A patch is in ONE of the two flashes. Often you will not see it at all.\n\n"
+            "Then press 1 or 2 for the flash it was in. If you saw nothing, GUESS.\n"
+            "Then press Y if you saw anything at all, N if not.\n\n"
+            f"Press {seen_key.upper()} to start.", [seen_key])
+        need_settle(settings.resume_delay_ms)
+        queue, repeats, done = list(plan), {}, 0
+        while queue:
+            item = queue.pop(0)
+            location, x, y, db, contrast = item
+            target = rng.choice((1, 2))
+            ok_all, worst_all = True, float("nan")
+            for interval in (1, 2):
+                tex = (texture(x, y, contrast) if interval == target
+                       else Texture(blank, centre))
+                ok, worst = probe_interval(tex, str(interval))
+                ok_all = ok_all and ok
+                if not math.isnan(worst):
+                    worst_all = worst if math.isnan(worst_all) else max(worst_all, worst)
+                if interval == 1:
+                    wait(settings.blind_spot_probe_gap_ms)
+            answer = int(ask("Which flash had the patch?\n\n"
+                             "1 = the first     2 = the second\n\n(Guess if you saw nothing.)",
+                             ["1", "2"]))
+            aware = ask("Did you see anything at all?\n\nY = yes     N = no", ["y", "n"]) == "y"
+            need_settle(settings.resume_delay_ms)
+            note = ""
+            if not ok_all:
+                note = FIXATION_BREAK
+                if repeats.get(id(item), 0) < 2:
+                    repeats[id(item)] = repeats.get(id(item), 0) + 1
+                    queue.append(item)
+                    note += " (tested again later)"
+                if settings.fixation_feedback:
+                    backend.show_message("Keep looking at the  +", 1000.0, fixation=fixation)
+            row = dict(trial=len(probe_rows) + 1,
+                       ms_from_start=int((time.perf_counter() - t0) * 1000),
+                       location=location, x_deg=x, y_deg=y, db_below_max=db,
+                       contrast=round(contrast, 5), target_interval=target, answer=answer,
+                       correct=int(answer == target), aware=int(aware), gaze_ok=int(ok_all),
+                       gaze_max_deg="" if math.isnan(worst_all) else round(worst_all, 2),
+                       eye_distance_mm=distance_now(), note=note)
+            probe_rows.append(row)
+            if on_trial is not None:
+                on_trial(dict(row, kind="blind_spot_probe"))
+            done += 1
+            every = settings.blind_spot_probe_break_every
+            if every and done % every == 0 and queue:
+                ask(f"Short break.  {done} done, {len(queue)} to go.\n\n"
+                    f"Rest your eye and blink.\n\nPress {seen_key.upper()} to continue.",
+                    [seen_key])
+                need_settle(settings.resume_delay_ms)
+        probe_status[0] = ("done" if watching else
+                           "done WITHOUT an eye tracker: the eye position was not checked, "
+                           "so answers at the blind spot may come from eye movements")
+
     monitor_started = False
     try:
         if watching:
@@ -1722,8 +2166,12 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             log(PRACTICE, None, p.x_deg, p.y_deg, settings.high_contrast, bool(seen), rt,
                 FIXATION_BREAK if seen is None else "")
 
-        if settings.setup_only or (settings.fixation_monitoring == FIX_BLIND_SPOT
-                                   and p_blind_spot > 0):
+        if settings.blind_spot_map and not settings.setup_only:
+            locate_blind_spot()                 # search + map, or a saved map checked
+            if settings.blind_spot_probe:
+                run_probe()
+        elif settings.setup_only or (settings.fixation_monitoring == FIX_BLIND_SPOT
+                                     and p_blind_spot > 0):
             if settings.blind_spot_search:
                 search_blind_spot()
             else:
@@ -1858,10 +2306,14 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
         patch_radius_px=radius_px, background_cd_m2=mean_luminance, post_processing=post,
         fixation_monitor=(monitor.describe() if watching else settings.fixation_monitoring),
         gaze_check=gaze_check,
-        blind_spot_xy=(blind_spot_xy if settings.fixation_monitoring == FIX_BLIND_SPOT
-                       else None),
+        blind_spot_xy=(blind_spot_xy if (settings.fixation_monitoring == FIX_BLIND_SPOT
+                                         or blind_spot_map.get("centre_xy")) else None),
         blind_spot_search=search,
         contrast_range=db_range,
+        blind_spot_map=blind_spot_map,
+        probe_rows=probe_rows,
+        probe_status=probe_status[0] or ("not run (aborted)" if settings.blind_spot_probe
+                                         and aborted else ""),
         gaze_samples=([(round(t - t0, 4), None if g is None else round(g[0], 3),
                         None if g is None else round(g[1], 3)) for t, g in monitor.samples]
                       if watching else []))
@@ -1962,7 +2414,28 @@ def results_text(outcome: PerimetryOutcome, offer_keys: bool = False) -> str:
          f"Blind-spot seen {rate(outcome.fixation_loss_rate)}") + f" [{tick[c['fixation']]}]",
     ]
     bs = outcome.blind_spot_search
-    if bs.get("status") == "found":
+    bm = outcome.blind_spot_map
+    if bm.get("centre_xy"):
+        x, y = bm["centre_xy"]
+        lines.append(f"Blind spot {'re-checked (saved map)' if bm['status'] == 'reused' else 'mapped'}"
+                     f": centre {abs(x):g} deg {'right' if x > 0 else 'left'}, "
+                     f"{abs(y):g} deg {'below' if y < 0 else 'above'}; "
+                     f"{2 * float(bm['half_width_deg']):.1f} x "
+                     f"{2 * float(bm['half_height_deg']):.1f} deg; "
+                     f"{len(outcome.dropped_points)} grid point(s) left out")
+    elif bm.get("status"):
+        lines.append(f"Blind spot NOT mapped ({bm.get('reason', '?')}): the average "
+                     "position and box were used")
+    for r in probe_summary(outcome.probe_rows):
+        if r["location"] == "blind_spot":
+            lines.append(f"Probe, blind spot, {r['db_below_max']:g} dB below max: "
+                         f"{r['correct']}/{r['trials']} right (p {r['p_above_chance']:.3f}), "
+                         f"said seen {r['said_seen']}")
+    if outcome.probe_status and outcome.probe_status != "done":
+        lines.append(f"Probe block: {outcome.probe_status}")
+    if bm.get("status"):
+        pass                                    # the map's line above says it all
+    elif bs.get("status") == "found":
         x, y = bs["found_xy"]
         lines.append(f"Blind spot found at {abs(x):g} deg {'right' if x > 0 else 'left'}, "
                      f"{abs(y):g} deg {'below' if y < 0 else 'above'} the +")
@@ -2054,7 +2527,10 @@ def _meta(outcome: PerimetryOutcome) -> dict:
         blind_spot=dict(used_xy=(list(outcome.blind_spot_xy) if outcome.blind_spot_xy
                                  else None),
                         average_xy=list(blind_spot_position(s)),
-                        search=outcome.blind_spot_search),
+                        search=outcome.blind_spot_search,
+                        map=outcome.blind_spot_map),
+        blind_spot_probe=dict(status=outcome.probe_status,
+                              summary=probe_summary(outcome.probe_rows)),
         grid=s.extent,
         contrast_range=outcome.contrast_range,
         honest_limits=[
@@ -2095,6 +2571,8 @@ def write_outputs(outcome: PerimetryOutcome, directory: pathlib.Path,
                                     y_deg="" if y is None else y)
                                for t, x, y in outcome.gaze_samples])
     write_csv("summary.csv", summary_rows(outcome, table))
+    write_csv("blind_spot_probe.csv", outcome.probe_rows)
+    write_csv("blind_spot_probe_summary.csv", probe_summary(outcome.probe_rows))
     (directory / "session.json").write_text(
         json.dumps(_meta(outcome), indent=2, default=str) + "\n")
     from specvis.procedure import maps

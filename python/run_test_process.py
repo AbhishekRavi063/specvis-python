@@ -20,7 +20,7 @@ import time
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from specvis.app.store import PERIMETRY_DIR, PRIOR_TABLE_FILE  # noqa: E402
+from specvis.app.store import PERIMETRY_DIR, PRIOR_TABLE_FILE, BlindSpotStore  # noqa: E402
 from specvis.core.luminance import LuminanceCalibration  # noqa: E402
 from specvis.procedure.perimetry import (background_for, default_calibration,  # noqa: E402
                                          field_half_degrees, fit_problem,
@@ -84,8 +84,14 @@ def run_test(job: dict, result_path: pathlib.Path) -> int:
         print(f"display {backend.size_px[0]}x{backend.size_px[1]} px, "
               f"{backend.refresh_hz:.2f} Hz; luminance: {calibration.source}", flush=True)
         try:
+            # This person's blind spot from an earlier session, if the map is on: the
+            # test only checks its centre and maps again when it is seen.
+            spots = BlindSpotStore()
+            saved = (spots.latest(settings.participant_id, settings.eye)
+                     if settings.blind_spot_map else None)
             outcome = run_perimetry(settings, backend, calibration=calibration,
-                                    prior_table=table, on_trial=_log)
+                                    prior_table=table, on_trial=_log,
+                                    saved_blind_spot=saved)
         except SessionError as error:
             backend.show_screen(f"Cannot run this test:\n\n{error}\n\nPress SPACE.")
             result_path.write_text(json.dumps({"error": str(error)}))
@@ -94,6 +100,7 @@ def run_test(job: dict, result_path: pathlib.Path) -> int:
         folder = write_outputs(outcome,
                                PERIMETRY_DIR / f"{settings.participant_id}_{settings.eye}_{stamp}",
                                table)
+        spots.add(settings.participant_id, settings.eye, outcome.blind_spot_map, folder.name)
         result_path.write_text(json.dumps({"folder": str(folder), "valid": outcome.valid}))
         print(f"saved {folder}", flush=True)
         backend.show_screen(results_text(outcome).replace("Press SPACE to finish.",

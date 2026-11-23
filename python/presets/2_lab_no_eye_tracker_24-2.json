@@ -1,6 +1,6 @@
 {
   "name": "Lab: 24-2 (42 points), no eye tracker (blind-spot check), 51 cm",
-  "description": "Same grid and distance, for when the eye tracker is not available: fixation is checked with patches at each person's own blind spot (found at the start). Not reliable for the eye whose blind spot falls in a blind half of the field. No dithering: the faintest patch is one grey step and the seeds start in the middle of the range, both from the photometer (Lab screen: 0.1 to 32.9 dB, start 16.5 dB).",
+  "description": "Same grid and distance, for when the eye tracker is not available: fixation is checked with patches at each person's own blind spot (found at the start). Not reliable for the eye whose blind spot falls in a blind half of the field. No dithering: the faintest patch is one grey step and the seeds start in the middle of the range, both from the photometer (Lab screen: 0.1 to 32.9 dB, start 16.5 dB). 23 Nov: each person's blind spot is mapped and saved (later sessions re-check it); no probe block without the eye tracker.",
   "settings": {
     "screen_width_mm": 542.3,
     "viewing_distance_mm": 510.0,
@@ -21,6 +21,8 @@
     "p_blind_spot": 0.05,
     "fixation_monitoring": "blind spot",
     "screen_height_mm": 305.0,
-    "eye_distance_tolerance_mm": 10.0
+    "eye_distance_tolerance_mm": 10.0,
+    "blind_spot_map": true,
+    "blind_spot_probe": false
   }
 }

@@ -29,6 +29,8 @@ PERIMETRY_DIR = DATA_DIR / "perimetry"
 PARTICIPANTS_FILE = DATA_DIR / "participants.json"
 PRESETS_DIR = PYTHON_DIR / "presets"
 PRIOR_TABLE_FILE = PERIMETRY_DIR / "prior_table.csv"
+#: Each person's mapped blind spot, per eye (participant data: python/output, never pushed).
+BLIND_SPOTS_FILE = DATA_DIR / "blind_spots.json"
 #: Luminance scales describe a monitor, not a person, so they travel with the code
 #: and every computer driving the same lab monitor uses the same calibration.
 SCALES_FILE = PYTHON_DIR / "calibration" / "luminance_scales.json"
@@ -290,6 +292,46 @@ class ScaleStore:
         tmp.write_text(json.dumps([dataclasses.asdict(s) for s in self._items.values()],
                                   indent=2) + "\n")
         tmp.replace(self.path)
+
+
+class BlindSpotStore:
+    """Each person's mapped blind spot, per eye, so a later session only checks it.
+
+    ``{participant id: {"R": [maps, oldest first], "L": [...]}}``. Every map is kept
+    (nothing is deleted); the latest usable one is what a new session checks. A
+    "not mapped" result is kept too, as a record, but is never reused.
+    """
+
+    def __init__(self, path: pathlib.Path = BLIND_SPOTS_FILE):
+        self.path = pathlib.Path(path)
+
+    def _read(self) -> dict:
+        if not self.path.exists():
+            return {}
+        return json.loads(self.path.read_text() or "{}")
+
+    def latest(self, participant_id: str, eye: str) -> Optional[dict]:
+        """The newest usable map (mapped, or a saved map re-checked) for this eye."""
+        maps = self._read().get(participant_id, {}).get(eye, [])
+        usable = [m for m in maps if m.get("status") in ("mapped", "reused")
+                  and m.get("centre_xy")]
+        return usable[-1] if usable else None
+
+    def history(self, participant_id: str, eye: str) -> List[dict]:
+        return list(self._read().get(participant_id, {}).get(eye, []))
+
+    def add(self, participant_id: str, eye: str, blind_spot_map: dict,
+            session_folder: str = "") -> None:
+        """Keep this session's result (empty maps, from runs with the map off, are not)."""
+        if not blind_spot_map or not blind_spot_map.get("status"):
+            return
+        data = self._read()
+        record = dict(blind_spot_map, session_folder=session_folder)
+        data.setdefault(participant_id, {}).setdefault(eye, []).append(record)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, indent=2, default=str) + "\n")
+        tmp.replace(self.path)                # never leave a half-written file
 
 
 def fit_quality(measurements: List[float]) -> Dict[str, float]:

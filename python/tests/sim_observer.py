@@ -72,7 +72,8 @@ class Observer(NullBackend):
     def __init__(self, threshold, rng, false_alarm=0.02, lapse=0.02,
                  sees_blind_spot=False, abort_after=None, eye="R", press_ms=350.0,
                  early_blank_presses=False, blind_spot=(15.5, -1.5),
-                 width_mm=WIDTH_MM, dist_mm=DIST_MM):
+                 width_mm=WIDTH_MM, dist_mm=DIST_MM, blind_spot_half=(2.5, 2.5),
+                 blind_spot_oval=False, scatter=None):
         super().__init__(refresh_hz=120.0)
         self.press_ms, self.early_blank_presses = press_ms, early_blank_presses
         self.threshold, self.rng = threshold, rng
@@ -80,6 +81,12 @@ class Observer(NullBackend):
         self.sees_blind_spot, self.abort_after, self.eye = sees_blind_spot, abort_after, eye
         self.shown = []
         self.blind_spot = blind_spot     # centre (temporal deg, y deg); 5 x 5 deg
+        # Its half width and height, and its shape: a box (the old tests) or an oval.
+        self.blind_spot_half, self.blind_spot_oval = blind_spot_half, blind_spot_oval
+        # Light scattered onto seeing retina: the chance a blind-spot patch of contrast c
+        # is noticed anyway (a function of c), or None for none at all.
+        self.scatter = scatter
+        self.interval_seen = []          # seen or not, per patch (for the 1-or-2 answers)
         self.width_mm, self.dist_mm = width_mm, dist_mm   # the screen the test assumes
 
     def field_deg(self, px, py):
@@ -99,21 +106,42 @@ class Observer(NullBackend):
             return report
         temporal = x if self.eye == "R" else -x
         bx, by = self.blind_spot
-        in_blind_spot = abs(temporal - bx) <= 2.5 and abs(y - by) <= 2.5
+        hw, hh = self.blind_spot_half
+        if self.blind_spot_oval:
+            in_blind_spot = ((temporal - bx) / hw) ** 2 + ((y - by) / hh) ** 2 <= 1.0
+        else:
+            in_blind_spot = abs(temporal - bx) <= hw and abs(y - by) <= hh
         if c < 1e-6:
             if self.early_blank_presses:
                 report.keys = [("space", 90.0)]      # pressing before anything could be seen
+                self.interval_seen.append(True)
                 return report
             p = self.false_alarm
         elif in_blind_spot and not self.sees_blind_spot:
-            p = self.false_alarm
+            p = self.false_alarm + (self.scatter(c) if self.scatter else 0.0)
         else:
             t = self.threshold(x, y)
             p = self.false_alarm if t is None else self.false_alarm + (
                 1 - self.false_alarm - self.lapse) * (1 - math.exp(-10 ** (3.5 * (math.log10(c) - t))))
-        if self.rng.random() < p:
+        seen = self.rng.random() < p
+        self.interval_seen.append(seen)
+        if seen:
             report.keys = [("space", self.press_ms)]
         return report
+
+    def show_screen(self, text, marks=(), keys=("space",)):
+        """The probe block's questions: which flash (the one seen, else a guess), and
+        whether anything was seen. Every other screen: the first key, as before."""
+        if "1" in keys and "2" in keys:
+            self.screens.append(text)
+            a, b = (self.interval_seen[-2:] + [False, False])[:2]
+            if a != b:
+                return "1" if a else "2"
+            return self.rng.choice(("1", "2"))
+        if "y" in keys and "n" in keys:
+            self.screens.append(text)
+            return "y" if any(self.interval_seen[-2:]) else "n"
+        return super().show_screen(text, marks, keys)
 
     def wait_for_key(self, keys, timeout_ms, fixation=None, clear_events=True):
         return (None, None)
@@ -129,9 +157,10 @@ def run(threshold, seed, eye="R", settings_overrides=None, **kw):
     values.update(settings_overrides or {})
     settings = PerimetrySettings(**values)
     table = kw.pop("table", None)
+    saved = kw.pop("saved_blind_spot", None)
     obs = Observer(threshold, random.Random(seed), eye=eye, width_mm=settings.screen_width_mm,
                    dist_mm=settings.viewing_distance_mm, **kw)
     obs.open(W, H, 0.5)
     out = run_perimetry(settings, obs, prior_table=table, rng=random.Random(seed),
-                        show_instructions=False)
+                        show_instructions=False, saved_blind_spot=saved)
     return out, obs

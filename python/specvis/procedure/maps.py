@@ -159,6 +159,15 @@ def _blind_spot(meta: Optional[dict]) -> Tuple[Optional[Tuple[float, float]],
     return spot, dropped
 
 
+def _blind_spot_oval(meta: Optional[dict]) -> Optional[Tuple[float, float, float, float]]:
+    """This person's mapped blind spot (centre x, y, half width, half height), if any."""
+    m = ((meta or {}).get("blind_spot") or {}).get("map") or {}
+    if not m.get("centre_xy"):
+        return None
+    return (float(m["centre_xy"][0]), float(m["centre_xy"][1]),
+            float(m["half_width_deg"]), float(m["half_height_deg"]))
+
+
 # --------------------------------------------------------------------------- grid map
 
 def draw_grid_map(summary_rows: Sequence[dict], path: pathlib.Path, *,
@@ -269,10 +278,12 @@ def draw_contour_map(summary_rows: Sequence[dict], path: pathlib.Path, *,
     plt = _matplotlib()
     from matplotlib.colors import BoundaryNorm, ListedColormap
 
+    oval = None
     if meta is not None:
         spot, dropped = _blind_spot(meta)
         blind_spot_xy = blind_spot_xy if blind_spot_xy is not None else spot
         dropped_points = dropped_points or dropped
+        oval = _blind_spot_oval(meta)
     dpi = 150
     points = point_values(summary_rows)
     fig, ax = plt.subplots(figsize=(width_px / dpi, width_px / dpi * 0.62))
@@ -311,7 +322,12 @@ def draw_contour_map(summary_rows: Sequence[dict], path: pathlib.Path, *,
         ax.scatter([p[0] for p in points], [p[1] for p in points], s=10, c=INK, zorder=4)
     if show_fixation:
         ax.plot(0, 0, marker="+", color=INK, markersize=16, mew=2.5, zorder=7)
-        if blind_spot_xy is not None:
+        if oval is not None:                  # this person's mapped blind spot
+            from matplotlib.patches import Ellipse
+            ax.add_patch(Ellipse((oval[0], oval[1]), 2 * oval[2], 2 * oval[3],
+                                 facecolor="white", edgecolor="#C4482A", linewidth=2,
+                                 linestyle="--", zorder=7))
+        elif blind_spot_xy is not None:
             ax.add_patch(plt.Circle(blind_spot_xy, 1.0, facecolor="white",
                                     edgecolor="#C4482A", linewidth=2, zorder=7))
     ax.set_xlim(-xmax, xmax)

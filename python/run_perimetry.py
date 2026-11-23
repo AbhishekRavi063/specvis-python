@@ -30,6 +30,7 @@ from specvis.procedure.perimetry import (background_for, default_calibration,  #
                                          OTHER_EYE_KEY, REPEAT_KEY, PerimetrySettings,
                                          results_marks, results_text, run_perimetry,
                                          write_outputs)
+from specvis.app.store import BlindSpotStore  # noqa: E402
 from specvis.procedure.prior_table import PriorTable  # noqa: E402
 from specvis.procedure.session import SessionError  # noqa: E402
 
@@ -116,8 +117,10 @@ def main() -> int:
         while True:
             print(f"\n=== {settings.participant_id}: {settings.eye} eye ===", flush=True)
             try:
+                saved = (BlindSpotStore().latest(settings.participant_id, settings.eye)
+                         if settings.blind_spot_map else None)
                 outcome = run_perimetry(settings, backend, calibration=calibration,
-                                        prior_table=table,
+                                        prior_table=table, saved_blind_spot=saved,
                                         on_trial=lambda r: r["note"] and print(
                                             f"  trial {r['trial']}: {r['kind']} "
                                             f"({r['x_deg']}, {r['y_deg']}) -> {r['note']}",
@@ -130,6 +133,8 @@ def main() -> int:
             stamp = time.strftime("%Y%m%d_%H%M%S")
             folder = write_outputs(
                 outcome, OUTPUT / f"{settings.participant_id}_{settings.eye}_{stamp}", table)
+            BlindSpotStore().add(settings.participant_id, settings.eye,
+                                 outcome.blind_spot_map, folder.name)
             maps.append(folder / "map.png")
             print()
             print(results_text(outcome).rsplit("\n", 1)[0])

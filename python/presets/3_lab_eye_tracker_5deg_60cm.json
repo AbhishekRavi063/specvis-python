@@ -1,6 +1,6 @@
 {
   "name": "Lab: 5 deg grid (56 points), eye tracker, 60 cm",
-  "description": "For testing (15 Nov). BenQ 24.5\" (542.3 x 305 mm), chin rest so the eye is 60 cm from the screen (the Tobii Pro Fusion does not track properly at 50-52 cm; the grid fits up to 62 cm). Our 5 deg grid: 56 points, 5 deg apart everywhere, + in the centre. Full Threshold 4-2 staircase (OPI). Gentler fixation check (our suggestion, to tune): 3 deg window, short flicks and tracker gaps up to 150 ms ignored, a patch thrown away only if over a quarter of its gaze is off the +, blinks never count as looking away: a patch not seen during a blink (eye lost 100 ms or more) is repeated, and after a blink the next patch waits 300 ms more. The eye-tracker bridge starts and closes with the app (Start ReFreM, or python\\specvis.bat app). Choose the ColorCAL scale \"Lab screen\". No dithering: the faintest patch is one grey step and the seeds start in the middle of the range, both from the photometer (Lab screen: 0.1 to 32.9 dB, start 16.5 dB). Pilot of 16 Nov follow-up: the tracker is calibrated for the tested eye only (Tobii monocular calibration); compare the validation accuracy with the 16 Nov pilot (up 2.21 deg).",
+  "description": "For testing (15 Nov). BenQ 24.5\" (542.3 x 305 mm), chin rest so the eye is 60 cm from the screen (the Tobii Pro Fusion does not track properly at 50-52 cm; the grid fits up to 62 cm). Our 5 deg grid: 56 points, 5 deg apart everywhere, + in the centre. Full Threshold 4-2 staircase (OPI). Gentler fixation check (our suggestion, to tune): 3 deg window, short flicks and tracker gaps up to 150 ms ignored, a patch thrown away only if over a quarter of its gaze is off the +, blinks never count as looking away: a patch not seen during a blink (eye lost 100 ms or more) is repeated, and after a blink the next patch waits 300 ms more. The eye-tracker bridge starts and closes with the app (Start ReFreM, or python\\specvis.bat app). Choose the ColorCAL scale \"Lab screen\". No dithering: the faintest patch is one grey step and the seeds start in the middle of the range, both from the photometer (Lab screen: 0.1 to 32.9 dB, start 16.5 dB). Pilot of 16 Nov follow-up: the tracker is calibrated for the tested eye only (Tobii monocular calibration); compare the validation accuracy with the 16 Nov pilot (up 2.21 deg). 23 Nov: each person's blind spot is mapped and saved (later sessions re-check it); the blind-spot probe block runs before the test.",
   "settings": {
     "screen_width_mm": 542.3,
     "screen_height_mm": 305.0,
@@ -30,6 +30,8 @@
     "fixation_break_max_out_frac": 0.25,
     "blink_min_ms": 100.0,
     "post_blink_delay_ms": 300.0,
-    "tracker_monocular_calibration": true
+    "tracker_monocular_calibration": true,
+    "blind_spot_map": true,
+    "blind_spot_probe": true
   }
 }

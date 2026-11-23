@@ -859,6 +859,22 @@ class FixMonitorDialog(QDialog):
                                "at the average position and then at nearby ones until one is "
                                "missed twice; the checks then use that position. Off = the "
                                "average position for everyone.")
+        self.map = QCheckBox("Map each person's blind spot (saved; later sessions only re-check it)")
+        self.map.setChecked(s.blind_spot_map)
+        self.map.setToolTip("After the search, the patch steps out from the blind spot in 8 "
+                            "directions until it is seen; an oval through the edges gives "
+                            "its centre and size. Grid points inside it are left out (not the "
+                            "average box) and the checks use its centre. Works with the eye "
+                            "tracker too. About 3-5 min the first time, ~30 s later.")
+        self.probe = QCheckBox("Blind-spot probe block before the test (1-or-2 + 'saw anything?')")
+        self.probe.setChecked(s.blind_spot_probe)
+        self.probe.setToolTip("Two flashes, the patch in one, at the mapped blind spot's centre "
+                              f"(and a few at the mirror point). {len(s.blind_spot_probe_db_below_max)} "
+                              f"contrasts x {s.blind_spot_probe_trials} trials. Needs the map. "
+                              "About 8 min (each trial waits for the eye to settle on the +).")
+        self.map.toggled.connect(lambda on: (self.probe.setEnabled(on),
+                                             on or self.probe.setChecked(False)))
+        self.probe.setEnabled(s.blind_spot_map)
         self.limit = _spin(0.0, 100.0, 100 * s.max_fixation_loss_rate, 5.0, 0, "%")
         self.tolerance = _spin(1.0, 5.0, s.fixation_tolerance_deg, 0.5, 1, "deg")
         self.hold = _spin(0.0, 1000.0, s.fixation_hold_ms, 50.0, 0, "ms")
@@ -873,6 +889,8 @@ class FixMonitorDialog(QDialog):
         self.max_mean = _spin(0.2, 3.0, s.tracker_max_mean_error_deg, 0.1, 1, "deg")
         form.addRow(_label("Blind spot (Heijl-Krakau)", "note"))
         form.addRow(self.search)
+        form.addRow(self.map)
+        form.addRow(self.probe)
         form.addRow("Blindspot distance from fix. point X (temporal)", self.temporal)
         form.addRow("Blindspot distance from fix. point Y (below)", self.below)
         form.addRow("Catch stimulus contrast", self.contrast)
@@ -898,6 +916,8 @@ class FixMonitorDialog(QDialog):
 
     def values(self) -> dict:
         return dict(blind_spot_search=self.search.isChecked(),
+                    blind_spot_map=self.map.isChecked(),
+                    blind_spot_probe=self.probe.isChecked() and self.map.isChecked(),
                     blind_spot_temporal_deg=self.temporal.value(),
                     blind_spot_below_deg=self.below.value(),
                     blind_spot_contrast=self.contrast.value(),
