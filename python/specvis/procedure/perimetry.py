@@ -1148,6 +1148,9 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 if key == "v":
                     continue
                 break
+            if key == seen_key and not val["passed"]:
+                # The operator went on although the check failed: say so in session.json.
+                gaze_check["operator_choice"] = "went on although the accuracy check failed"
             if key == "r" and do_cal:
                 continue
             return
@@ -1696,7 +1699,9 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 calibrate_and_validate()
             else:
                 check_gaze_at_start()
-        if show_instructions:
+        # Setup only (Block 2) without a blind-spot search: Block 1's instructions would
+        # make the person think Block 1 starts again (lab report 17 Nov), so none.
+        if show_instructions and not (settings.setup_only and not settings.blind_spot_search):
             key = backend.show_screen(
                 f"Cover your {'LEFT' if settings.eye == 'R' else 'RIGHT'} eye.\n\n"
                 "Keep looking at the central +  all the time.\n"

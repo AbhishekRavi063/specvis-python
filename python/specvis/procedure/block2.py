@@ -14,15 +14,28 @@ twice per spot: 4 patches per spot per condition. Conditions, one phase after an
 reversal, mixed in a random order.
 
 Every trial: a random gap of 500-800 ms (only the +), the patch for 2 s, then 1.2 s more to
-answer (an answer while the patch is up counts too). No press = not seen. **Catch trials**
-(nothing shown, same timing) are mixed in; a press on one is a false press.
+answer (an answer while the patch is up counts too). **Every trial lasts the same**: an
+early answer does not shorten it, and only the first answer counts, so a second press can
+never land in the next trial (lab report 17 Nov). A press less than 250 ms after onset is
+an anticipation (it is ignored and the row says ANTICIPATION). No press = not seen.
+**Catch trials** (nothing shown, same timing) are mixed in; a press on one is a false press.
+
+``forced_choice`` (off by default; for blindsight, as in Sanchez-Lopez et al. and Elliott):
+the person must guess on every trial; a trial with no answer in time is shown again once at
+the end. With ``awareness_rating`` a 1-3 rating follows each trial (1 = saw nothing, 2 =
+something, 3 = clearly); "seen" is then a rating of 2 or 3, and the direction answers on
+unseen trials are tested against chance (50 %).
 
 Results per spot and condition: shown, seen (pressed), right and wrong direction; overall:
 true-positive (seen) rate, false-press rate on catch trials.
 
 **Rates are whole frames**: refresh / k (see :mod:`specvis.core.reversal`); the asked-for
-and the shown rate are both written to every row. At 239.76 Hz: 20 -> 19.98 Hz, 38 ->
-39.96 Hz; set the screen to its highest refresh first.
+and the shown rate are both written to every row. The rate shown depends on the refresh
+PsychoPy measures at the start, not the one Windows names: at 239.76 Hz 38 -> 39.96 Hz,
+at 240.5 Hz (the lab BenQ, 17 Nov) 20 -> 20.04 and 38 -> 40.09 Hz. Set the screen to its
+highest refresh first.
+
+Time (lab, 17 Nov): about 38 min per eye with the setup and the breaks.
 
 Thresholds were measured with Block 1's 45-degree patch; the patches here are horizontal
 and vertical (usually a little easier to see than oblique ones).
@@ -61,6 +74,8 @@ PRESET4_TRACKER = dict(eye_distance_tolerance_mm=20.0, fixation_tolerance_deg=3.
                        post_blink_delay_ms=300.0, tracker_monocular_calibration=True)
 #: The answer keys: LEFT = horizontal, RIGHT = vertical.
 ANSWER_KEYS = {"left": HORIZONTAL, "right": VERTICAL}
+#: The awareness rating (``awareness_rating``): top-row or keypad digits.
+RATING_KEYS = {"1": 1, "2": 2, "3": 3, "num_1": 1, "num_2": 2, "num_3": 3}
 STATIC = 0.0                     # a "rate" of 0 Hz = a static patch
 CATCH = "catch"
 BLIND_SPOT = "blind spot"
@@ -140,14 +155,24 @@ class Block2Settings:
     #: Catch trials (nothing shown) as a share of the patches in each phase: our
     #: suggestion, 10 %.
     catch_fraction: float = 0.10
+    #: A press sooner than this after onset is an anticipation, not an answer (our
+    #: suggestion, from the lab report of 17 Nov).
+    anticipation_ms: float = 250.0
+    #: Off = "press only if seen" (detection). On = a guess on every trial (needed to show
+    #: blindsight); trials with no answer in time are shown again once at the end.
+    forced_choice: bool = False
+    #: After each trial: 1 = saw nothing, 2 = saw something, 3 = saw it clearly.
+    awareness_rating: bool = False
     break_every: int = 40
     #: After SPACE (start, breaks) only the + shows for this long (lab report 16 Nov).
     resume_delay_ms: float = 1200.0
-    # Eye tracker (our suggestion, to tune): a patch counts when at least half its
-    # samples are valid and at most 10 % of them are more than 2 deg off the +.
+    # Eye tracker: a patch counts when at least half its samples are valid and at most
+    # 25 % of them are more than 3 deg off the + -- Block 1's preset 4 rule (our
+    # suggestion, to tune). 2 deg / 10 % threw out 93 % of patches on 17 Nov, with the
+    # tracker's own centre error at 1.5 deg.
     fixation_monitoring: str = FIX_NONE
-    fixation_tolerance_deg: float = 2.0
-    fixation_max_out_frac: float = 0.10
+    fixation_tolerance_deg: float = 3.0
+    fixation_max_out_frac: float = 0.25
     repeat_broken: bool = False
     cancel_key: str = "escape"
 
@@ -277,6 +302,14 @@ def _pct(a: int, b: int):
     return round(100.0 * a / b) if b else ""
 
 
+def binomial_p(right: int, n: int, chance: float = 0.5):
+    """One-sided: the chance of ``right`` or more of ``n`` by guessing."""
+    if not n:
+        return ""
+    return sum(math.comb(n, k) * chance ** k * (1 - chance) ** (n - k)
+               for k in range(right, n + 1))
+
+
 @dataclass
 class Block2Outcome:
     settings: Block2Settings
@@ -304,8 +337,10 @@ class Block2Outcome:
             for rate in self.rates:
                 rs = [r for r in rows if r["place"] == p.name
                       and r["requested_hz"] == rate["requested_hz"]]
-                pressed = [r for r in rs if r["answer"]]
-                right = sum(r["correct"] for r in rs)
+                pressed = [r for r in rs if r["seen"]]
+                unseen = [r for r in rs if not r["seen"] and r["answer"]]
+                right = sum(r["correct"] for r in pressed)
+                right_unseen = sum(r["correct"] for r in unseen)
                 out.append(dict(place=p.name, x_deg=p.x_deg, y_deg=p.y_deg, kind=p.kind,
                                 block1_db=p.block1_db,
                                 contrast=rs[0]["contrast"] if rs else "",
@@ -315,7 +350,9 @@ class Block2Outcome:
                                 wrong=len(pressed) - right, not_seen=len(rs) - len(pressed),
                                 seen_pct=_pct(len(pressed), len(rs)),
                                 right_pct_of_shown=_pct(right, len(rs)),
-                                right_pct_of_seen=_pct(right, len(pressed))))
+                                right_pct_of_seen=_pct(right, len(pressed)),
+                                unseen_answered=len(unseen), right_unseen=right_unseen,
+                                right_pct_of_unseen=_pct(right_unseen, len(unseen))))
         return out
 
     def overall(self) -> List[dict]:
@@ -327,20 +364,28 @@ class Block2Outcome:
                         or r["requested_hz"] == rate["requested_hz"]]
             patches = pick(self._patch_rows())
             catches = pick([r for r in self.rows if r["place"] == CATCH])
-            fp = sum(1 for r in catches if r["answer"])
+            fp = sum(1 for r in catches if r["seen"])
             all_trials = len(patches) + len(catches)
             for kind in (None, THRESHOLD, NOT_SEEN, BLIND_SPOT):
                 ps = [r for r in patches if kind is None or r["kind"] == kind]
                 if kind is not None and not ps:
                     continue
-                k_tp = sum(1 for r in ps if r["answer"])
-                k_right = sum(r["correct"] for r in ps)
+                k_tp = sum(1 for r in ps if r["seen"])
+                k_right = sum(r["correct"] for r in ps if r["seen"])
+                un = [r for r in ps if not r["seen"] and r["answer"]]
+                un_right = sum(r["correct"] for r in un)
+                p = binomial_p(k_right, k_tp)
+                p_un = binomial_p(un_right, len(un))
                 out.append(dict(
                     condition="all" if rate is None else rate_label(rate["requested_hz"]),
                     places="all" if kind is None else kind,
                     patches=len(ps), true_positives=k_tp, tp_pct=_pct(k_tp, len(ps)),
                     misses=len(ps) - k_tp, right=k_right, wrong=k_tp - k_right,
                     right_pct_of_seen=_pct(k_right, k_tp),
+                    p_seen_vs_50=p if p == "" else float(f"{p:.3g}"),
+                    unseen_answered=len(un), right_unseen=un_right,
+                    right_pct_of_unseen=_pct(un_right, len(un)),
+                    p_unseen_vs_50=p_un if p_un == "" else float(f"{p_un:.3g}"),
                     catch_trials=len(catches) if kind is None else "",
                     catch_pct_of_trials=_pct(len(catches), all_trials) if kind is None else "",
                     false_positives=fp if kind is None else "",
@@ -366,6 +411,19 @@ def run_block2(settings: Block2Settings, backend: StimulusBackend,
     setup: Dict[str, object] = {}
     if settings.setup and show_instructions and (
             settings.fixation_monitoring != FIX_NONE or not settings.block1_folder):
+        if settings.block1_folder:
+            key = backend.show_screen(
+                "Block 2: the stripes test.\n\nFirst a short eye-tracker check "
+                "(look at the targets), then the stripes.\nThis is NOT the flash test "
+                "again.\n\nPress SPACE to go on.", keys=["space", settings.cancel_key])
+            if key == settings.cancel_key:
+                return Block2Outcome(settings=settings, rows=[], rates=[],
+                                     refresh_hz=backend.refresh_hz, background_cd_m2=0.0,
+                                     calibration_source=calibration.source,
+                                     calibrated=calibration.calibrated,
+                                     started=time.strftime("%Y-%m-%dT%H:%M:%S"),
+                                     duration_s=0.0, aborted=True, counts=dict(zero),
+                                     fixation_monitor=settings.fixation_monitoring)
         first = run_perimetry(settings.setup_settings(), backend, calibration=calibration,
                               rng=rng, show_instructions=True, fixation_monitor=monitor)
         found = (first.blind_spot_search or {}).get("found_xy")
@@ -460,19 +518,25 @@ def run_block2(settings: Block2Settings, backend: StimulusBackend,
 
     def one(trial: Block2Trial, repeat: bool) -> dict:
         gap = rng.uniform(settings.iti_min_ms, settings.iti_max_ms)
-        wait(gap)
+        wait(gap)                               # (clears any key pressed before)
         static = trial.requested_hz == STATIC
         k = frames_for[trial.requested_hz]
         catch = trial.place is None
         if catch:
             # Nothing shown: the + alone for as long as a patch would be up.
             t_on = time.perf_counter()
-            key, rt = backend.wait_for_key(answer_keys + [abort_key], settings.train_ms,
-                                           fixation=fixation)
+            presses = []
+            left = settings.train_ms
+            while left > 1:
+                key, rt = backend.wait_for_key(answer_keys + [abort_key], left,
+                                               fixation=fixation)
+                if key == abort_key:
+                    raise Aborted
+                if key is None:
+                    break
+                presses.append((key, settings.train_ms - left + rt))
+                left = settings.train_ms - presses[-1][1]
             t_off = time.perf_counter()
-            if key == abort_key:
-                raise Aborted
-            early = [(key, rt)] if key else []
             frames, dropped, measured = 0, 0, refresh
         else:
             tex = textures[(trial.place.name, trial.orientation)]
@@ -484,29 +548,45 @@ def run_block2(settings: Block2Settings, backend: StimulusBackend,
             t_off = time.perf_counter()
             if any(key == abort_key for key, _ in report.keys):
                 raise Aborted
-            early = [(key, rt) for key, rt in report.keys if key in ANSWER_KEYS]
+            presses = [(key, rt) for key, rt in report.keys if key in ANSWER_KEYS]
             frames, dropped = report.frames_presented, report.dropped_frames
             measured = report.measured_refresh_hz or refresh
             monitor.patch_shown(t_on, t_off)
-        if early:
-            key, rt = early[0]
+        anticipated = any(rt < settings.anticipation_ms for _, rt in presses)
+        on_time = [(key, rt) for key, rt in presses if rt >= settings.anticipation_ms]
+        if on_time:
+            key, rt = on_time[0]
+            wait(settings.response_ms)          # the window runs out; later keys ignored
         else:
             key, rt = backend.wait_for_key(answer_keys + [abort_key], settings.response_ms,
                                            fixation=fixation)
             if key == abort_key:
                 raise Aborted
-            if rt is not None:
+            if key is not None:
+                wait(max(0.0, settings.response_ms - rt))
                 rt += settings.train_ms
+        rating = ""
+        if settings.awareness_rating:
+            got = backend.show_screen(
+                "Did you see a patch?\n\n1 = nothing     2 = something     3 = clearly",
+                keys=list(RATING_KEYS) + [abort_key])
+            if got == abort_key:
+                raise Aborted
+            rating = RATING_KEYS[got]
         counts["catch" if catch else "trials"] += 1
         counts["dropped_frames"] += dropped
         answer = ANSWER_KEYS.get(key or "", "")
+        seen = (rating >= 2) if settings.awareness_rating else bool(answer)
         pl = trial.place
+        notes = (["ANTICIPATION"] if anticipated else []) + (
+            ["NO_ANSWER"] if settings.forced_choice and not answer and not catch else [])
         row = dict(trial=len(rows) + 1, ms_from_start=int((time.perf_counter() - t0) * 1000),
                    phase=trial.phase + 1, condition=rate_label(trial.requested_hz),
                    place=CATCH if catch else pl.name, kind=CATCH if catch else pl.kind,
                    x_deg="" if catch else pl.x_deg, y_deg="" if catch else pl.y_deg,
                    orientation=trial.orientation, answer=answer,
-                   outcome=(("false press" if answer else "correct rejection") if catch else
+                   seen=int(seen), awareness=rating,
+                   outcome=(("false press" if seen else "correct rejection") if catch else
                             ("miss" if not answer else
                              "right" if answer == trial.orientation else "wrong")),
                    correct=int(bool(answer) and answer == trial.orientation),
@@ -517,7 +597,8 @@ def run_block2(settings: Block2Settings, backend: StimulusBackend,
                    contrast="" if catch else round(contrast_of[pl.name], 4),
                    block1_db="" if catch else pl.block1_db, gap_ms=round(gap),
                    reaction_ms_from_onset="" if rt is None else round(rt),
-                   repeat=int(repeat), gaze_max_deg="", gaze_valid_pct="", counts=1, note="")
+                   repeat=int(repeat), gaze_max_deg="", gaze_valid_pct="",
+                   counts=0 if "NO_ANSWER" in notes else 1, note=" ".join(notes))
         if watching and not catch:
             ok, worst, frac = judge_patch(monitor.between(t_on, t_off),
                                           settings.fixation_tolerance_deg,
@@ -526,7 +607,7 @@ def run_block2(settings: Block2Settings, backend: StimulusBackend,
                        gaze_valid_pct=round(100 * frac))
             if not ok:
                 counts["fixation_breaks"] += 1
-                row.update(counts=0, note="FIXATION_BREAK")
+                row.update(counts=0, note=" ".join(["FIXATION_BREAK"] + notes))
         rows.append(row)
         return row
 
@@ -558,18 +639,27 @@ def run_block2(settings: Block2Settings, backend: StimulusBackend,
                     "A striped patch will "
                     + ("appear" if settings.phases[phase] == (STATIC,) else "flicker")
                     + " for 2 seconds somewhere around it.\n"
-                    "If you see it, say which way its stripes went:\n\n"
-                    "LEFT arrow  =  horizontal stripes  (like  =  )\n"
+                    + ("Say which way its stripes went, EVERY time:\n\n"
+                       if settings.forced_choice else
+                       "If you see it, say which way its stripes went:\n\n")
+                    + "LEFT arrow  =  horizontal stripes  (like  =  )\n"
                     "RIGHT arrow  =  vertical stripes  (like  ||  )\n\n"
-                    "If you see nothing, do not press.\n\nPress SPACE to start.")
+                    "Answer ONCE. You may answer while the patch is still on.\n"
+                    + ("If you saw nothing, guess (quickly).\n" if settings.forced_choice
+                       else "If you see nothing, do not press.\n")
+                    + ("After each one, say how well you saw it: 1 = nothing, "
+                       "2 = something, 3 = clearly.\n" if settings.awareness_rating else "")
+                    + "\nPress SPACE to start.")
             broken: List[Block2Trial] = []
             for i, trial in enumerate(trials):
                 if i and settings.break_every and i % settings.break_every == 0:
                     screen_key(f"Short break.  {i} of {len(trials)} done.\n\n"
                                "Press SPACE to go on.")
-                if not one(trial, False)["counts"]:
+                row = one(trial, False)
+                if not row["counts"] and (settings.repeat_broken
+                                          or "NO_ANSWER" in row["note"]):
                     broken.append(trial)
-            if settings.repeat_broken and broken:
+            if broken:
                 rng.shuffle(broken)
                 for trial in broken:
                     counts["repeated"] += 1
@@ -638,6 +728,8 @@ def results_text(outcome: Block2Outcome) -> str:
     if val.get("mean_accuracy_deg") is not None:
         lines += ["", f"Tracker accuracy: {val['mean_accuracy_deg']} deg (centre "
                   f"{val.get('centre_accuracy_deg')} deg)"]
+    if (outcome.setup.get("gaze_check") or {}).get("operator_choice"):
+        lines.append("WARNING: the eye-tracker accuracy check FAILED; the run went on.")
     lines += ["", f"Eye off the +: {outcome.counts['fixation_breaks']}   "
               f"dropped frames: {outcome.counts['dropped_frames']}"]
     return "\n".join(lines)

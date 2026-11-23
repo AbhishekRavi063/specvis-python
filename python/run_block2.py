@@ -79,6 +79,10 @@ def main() -> int:
                     help="no Block 1 map: 4 quadrants + blind spot (try-outs only)")
     ap.add_argument("--train-s", type=float, default=2.0, help="seconds each patch is up")
     ap.add_argument("--no-blind-spot", action="store_true")
+    ap.add_argument("--forced-choice", action="store_true",
+                    help="a guess on every trial (for blindsight); no answer = shown again")
+    ap.add_argument("--rating", action="store_true",
+                    help="after each trial: 1 = saw nothing, 2 = something, 3 = clearly")
     ap.add_argument("--no-setup", action="store_true",
                     help="skip the eye-tracker calibration")
     group = ap.add_mutually_exclusive_group()
@@ -102,7 +106,8 @@ def main() -> int:
         viewing_distance_mm=args.distance_mm, screen_width_mm=args.screen_width_mm,
         screen_height_mm=args.screen_height_mm, train_ms=1000.0 * args.train_s,
         blind_spot=not args.no_blind_spot, setup=not args.no_setup,
-        block1_folder=args.block1 or None,
+        block1_folder=args.block1 or None, forced_choice=args.forced_choice,
+        awareness_rating=args.rating,
         fixation_monitoring=FIX_TRACKER if args.tracker else (FIX_MOUSE if args.mouse
                                                               else FIX_NONE))
     if args.block1:
@@ -139,6 +144,12 @@ def main() -> int:
         stamp = time.strftime("%Y%m%d_%H%M%S")
         folder = write_outputs(outcome, OUTPUT / f"{settings.participant_id}_{settings.eye}_{stamp}")
         print("\n" + results_text(outcome) + f"\n\nSaved to {folder}", flush=True)
+        try:
+            from tools.block2_report import report
+            report(folder)
+            print("Figures and results_std.csv written there too.", flush=True)
+        except Exception as error:                 # the data are saved; figures are extra
+            print(f"(figures not made: {error})", flush=True)
         backend.show_screen(results_text(outcome) + "\n\nPress SPACE to close.")
     finally:
         backend.close()

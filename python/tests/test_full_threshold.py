@@ -377,4 +377,5 @@ cats = collections.Counter(categorise(o, p) for p in o.points)
 require(o.valid and len(o.points) == 34 and abs(cats["blind"] - 16) <= 1,
         f"hemianopia on the +/-15 deg grid: {cats['blind']} blind of 16 in the right half")
 
+print("\nALL OK" if ok else "\nFAILURES")
 sys.exit(0 if ok else 1)

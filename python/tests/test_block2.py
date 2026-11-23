@@ -76,6 +76,8 @@ class Person(NullBackend):
         self.shown, self.answer_timeouts = [], []
         self.false_left = false_presses
         self.blind_xy = set()
+        self.answered = False
+        self.train_keys = []                # keys to report during the next trains
 
     def present_train(self, polarities, frames_per_reversal, total_frames, fixation=None,
                       response_keys=()):
@@ -83,14 +85,23 @@ class Person(NullBackend):
         b = polarities[0].brightness
         horizontal = np.abs(np.diff(b, axis=0)).mean() > np.abs(np.diff(b, axis=1)).mean()
         self.current = (polarities[0].centre_px, "left" if horizontal else "right")
-        return super().present_train(polarities, frames_per_reversal, total_frames,
-                                     fixation, response_keys)
+        report = super().present_train(polarities, frames_per_reversal, total_frames,
+                                       fixation, response_keys)
+        if self.train_keys:
+            report.keys = self.train_keys.pop(0)
+            if any(rt >= 250 for _, rt in report.keys):
+                self.answered = True
+        return report
 
     def wait_for_key(self, keys, timeout_ms, fixation=None, clear_events=True):
         if "left" not in keys:                      # a gap (only the + is up)
             self.current = None
+            self.answered = False
             return None, None
         self.answer_timeouts.append(timeout_ms)
+        if self.answered:                           # answered once: no more presses
+            return None, None
+        self.answered = True
         if self.current is None:                    # a catch trial
             if self.false_left > 0:
                 self.false_left -= 1
@@ -205,7 +216,7 @@ with tempfile.TemporaryDirectory() as tmp:
             and all(n == 2 and t == frames for n, _, t in person.shown[128:]),
             "static: one polarity for 2 s; flicker: two polarities (pattern reversal), 2 s")
     require(1200.0 in person.answer_timeouts and 2000.0 in person.answer_timeouts
-            and all(t in (1200.0, 2000.0) for t in person.answer_timeouts),
+            and all(t in (1200.0, 2000.0) or t < 2000.0 for t in person.answer_timeouts),
             "answer window 1.2 s after the patch (catch: the 2 s, then 1.2 s)")
     gaps = [row["gap_ms"] for row in o.rows]
     require(min(gaps) >= 500 and max(gaps) <= 800 and len(set(gaps)) > 50,
@@ -275,6 +286,110 @@ with tempfile.TemporaryDirectory() as tmp:
         require(False, "both eyes refused")
     except SessionError:
         require(True, "both eyes refused")
+
+    print("7. one answer per trial: no carry-over, anticipations left out")
+
+    class Timed(Person):
+        """Records every wait, so the trial length can be checked."""
+        def __init__(self):
+            super().__init__(false_presses=0)
+            self.waits = []
+
+        def wait_for_key(self, keys, timeout_ms, fixation=None, clear_events=True):
+            self.waits.append((tuple(keys), timeout_ms))
+            return super().wait_for_key(keys, timeout_ms, fixation, clear_events)
+
+    t7 = Timed()
+    t7.open(1920, 1080, 0.5)
+    # trial 1: two presses during the patch (800 and 1500 ms); trial 2: a press at 100 ms
+    # (carried over / anticipated) and nothing else from the patch
+    t7.train_keys = [[("left", 800.0), ("right", 1500.0)], [("right", 100.0)]]
+    s7 = Block2Settings(block1_folder=str(b1), catch_fraction=0.0, phases=((STATIC,),))
+    o7 = run_block2(s7, t7, rng=random.Random(4))
+    r1, r2 = o7.rows[0], o7.rows[1]
+    require(r1["reaction_ms_from_onset"] == 800 and r1["answer"] == "horizontal"
+            and r1["note"] == "",
+            "two presses during the patch: only the first counts")
+    require(t7.waits[1] == (("escape",), 1200.0),
+            "an answer during the patch does not shorten the trial: the 1.2 s still runs")
+    require("ANTICIPATION" in r2["note"] and r2["reaction_ms_from_onset"] != 100,
+            f"a press 100 ms after onset is an anticipation, not the answer ({r2['note']})")
+    after_answer = [w for w in t7.waits if w[0] == ("escape",) and w[1] < 1200.0]
+    require(all(w[1] >= 0 for w in after_answer),
+            "an answer after the patch: the rest of the 1.2 s still runs")
+    instr = "\n".join(t7.screens)
+    require("Answer ONCE" in instr and "while the patch is still on" in instr,
+            "instructions: answer once, may answer while the patch is on")
+
+    print("8. Block 2 setup: no Block 1 instructions; Block 1's fixation rule")
+    ct9 = CalTracker()
+    p9 = Person(false_presses=0)
+    p9.open(1920, 1080, 0.5)
+    run_block2(Block2Settings(block1_folder=str(b1), fixation_monitoring="eye tracker",
+                              phases=((STATIC,),)), p9, rng=random.Random(2),
+               fixation_monitor=ct9)
+    require(not any("Striped patches will flash" in x for x in p9.screens)
+            and any("NOT the flash test" in x for x in p9.screens),
+            "the setup says it is Block 2, not Block 1's flash test")
+    s9 = Block2Settings()
+    require(s9.fixation_tolerance_deg == 3.0 and s9.fixation_max_out_frac == 0.25,
+            "fixation rule as Block 1 (3 deg, 25 %)")
+
+    print("9. forced choice with the 1-3 rating (off by default)")
+    require(not Block2Settings().forced_choice and not Block2Settings().awareness_rating,
+            "default stays 'press only if seen'")
+
+    class Guesser(Person):
+        """Rates every trial 1 (saw nothing) yet answers right (blindsight), except it
+        gives no answer on its first two patches."""
+        def __init__(self):
+            super().__init__(false_presses=0)
+            self.silent = 2
+
+        def wait_for_key(self, keys, timeout_ms, fixation=None, clear_events=True):
+            if "left" in keys and self.current is not None and self.silent > 0:
+                self.silent -= 1
+                self.current = None
+                self.answered = True
+                return None, None
+            if "left" in keys and self.current is None and not self.answered:
+                self.answered = True
+                return "left", 700.0                # a guess on a catch trial
+            return super().wait_for_key(keys, timeout_ms, fixation, clear_events)
+
+    g = Guesser()
+    g.open(1920, 1080, 0.5)
+    o10 = run_block2(Block2Settings(block1_folder=str(b1), forced_choice=True,
+                                    awareness_rating=True, phases=((STATIC,),)), g,
+                     rng=random.Random(6))
+    no_ans = [r for r in o10.rows if "NO_ANSWER" in r["note"]]
+    require(len(no_ans) == 2 and o10.counts["repeated"] == 2
+            and len([r for r in o10.rows if r["repeat"]]) == 2,
+            "2 patches with no answer in time: not counted, shown again at the end")
+    require(all(r["awareness"] == 1 and r["seen"] == 0 for r in o10.rows),
+            "every trial rated (1 = saw nothing): none counted as seen")
+    ovf = {(x["condition"], x["places"]): x for x in o10.overall()}
+    a = ovf[("static", "all")]
+    require(a["unseen_answered"] == 128 and a["right_unseen"] == 128
+            and a["p_unseen_vs_50"] < 1e-30 and a["false_positives"] == 0,
+            "right on unseen trials is tested against 50 % (blindsight); "
+            "catch guesses rated 1 are not false presses")
+    require(any("guess" in x for x in g.screens) and any("1 = nothing" in x for x in g.screens),
+            "instructions ask for a guess and a rating")
+
+    print("10. the report tool: figures and the binomial table")
+    sys.path.insert(0, str(HERE))
+    from tools.block2_report import report
+    rf = write_outputs(o, tmp / "rep")
+    report(rf)
+    std = list(csv.DictReader(open(rf / "results_std.csv")))
+    require((rf / "block2_greymap.png").exists() and (rf / "block2_accuracy.png").exists()
+            and len(std) > 0 and "p_seen_vs_50" in std[0] and "d_prime" in std[0]
+            and {"at threshold", "not seen in Block 1", "blind spot"} <= {r["places"] for r in std},
+            "results_std.csv (with p vs 50 % and d'), the grey map and the accuracy plot")
+    labels = {r["condition"] for r in std}
+    require(any("19.98" in x for x in labels) and any("39.96" in x for x in labels),
+            f"the shown rate is in the labels: {sorted(labels)}")
 
 print("\nALL OK" if ok else "\nFAILURES")
 sys.exit(0 if ok else 1)

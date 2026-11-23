@@ -820,4 +820,5 @@ finally:
     bridge.terminate()
     bridge.wait(5)
 
+print("\nALL OK" if ok else "\nFAILURES")
 sys.exit(0 if ok else 1)
