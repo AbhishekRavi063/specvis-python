@@ -110,9 +110,10 @@ def logger(lines):
     return lambda *a, **k: lines.append(" ".join(str(x) for x in a))
 
 
-print("4. a whole run: ENTER at every place, R once")
-with tempfile.TemporaryDirectory() as tmp:
-    screen_uniformity.OUT_DIR = pathlib.Path(tmp)
+print("4. a whole run: ENTER at every place, R once (into a folder not made yet)")
+with tempfile.TemporaryDirectory() as tmp0:
+    tmp = pathlib.Path(tmp0) / "output" / "uniformity"     # lab PC 24 Nov: the figure
+    screen_uniformity.OUT_DIR = tmp                         # crashed when it was missing
     args = screen_uniformity.parse_args(["uniformity", "--simulate", "--label", "HP 527sf",
                                          "--note", "Brightness 100", "--settle", "0",
                                          "--width-mm", "598", "--figure",

@@ -36,11 +36,12 @@ from PyQt6.QtGui import (QColor, QDesktopServices, QFont, QGuiApplication, QImag
                          QPen, QPixmap)
 from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QDialog,
                              QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout,
-                             QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
+                             QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
                              QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
                              QProgressBar, QPushButton, QSizePolicy, QSpinBox, QStackedWidget, QTableWidget,
                              QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
+from ..core.flatfield import FlatFieldMap, FlatFieldStore
 from ..core.gabor import GaborParameters, minimum_renderable_contrast, render_brightness
 from ..core.luminance import MEASUREMENT_POINTS, LuminanceCalibration
 from ..procedure.perimetry import (APP_EXTENTS, CENTRAL, EXTENT_NAMES, EXTENTS, FAILURE_REASONS, FULL,
@@ -1029,7 +1030,8 @@ class SpecvisWindow(QMainWindow):
                  participants_file: pathlib.Path = store.PARTICIPANTS_FILE,
                  presets_dir: pathlib.Path = store.PRESETS_DIR,
                  prior_table_file: pathlib.Path = store.PRIOR_TABLE_FILE,
-                 scales_file: pathlib.Path = store.SCALES_FILE):
+                 scales_file: pathlib.Path = store.SCALES_FILE,
+                 flatfield_file: Optional[pathlib.Path] = None):
         super().__init__()
         self.perimetry_dir = pathlib.Path(perimetry_dir)
         self.presets_dir = pathlib.Path(presets_dir)
@@ -1041,6 +1043,9 @@ class SpecvisWindow(QMainWindow):
         self.settings = PerimetrySettings()
         self.patient: Optional[store.Participant] = None
         self.scale_id: Optional[str] = self._newest_measured_scale()
+        #: Flat-field (screen evenness) map: None = off, the default.
+        self.flat_maps = FlatFieldStore(flatfield_file)
+        self.flat_field_id: Optional[str] = None
         self.settings_name = "(defaults)"
         self.process: Optional[QProcess] = None
         self.last_session: Optional[store.SessionInfo] = None
@@ -1275,6 +1280,13 @@ class SpecvisWindow(QMainWindow):
         self.f_bg_scale = _fixed(_readonly(), 430, 40)
         self.f_bg_scale.setToolTip("The Gabor's mean equals the background: one scale serves both")
         v.addLayout(_row([_lab("Scale name", 250, 40, 20), self.f_bg_scale]))
+        v.addWidget(_separator())
+        choose = _fixed(_button("Choose", self.flat_field_choose), 100, 40)
+        choose.setToolTip("Screen evenness correction: the background is drawn slightly "
+                          "brighter where the screen is dimmer (its own map, from python/"
+                          "specvis.sh flatfield). Off unless chosen. Needs a measured scale.")
+        self.f_flat_field = _fixed(_readonly(), 330, 40)
+        v.addLayout(_row([_lab("Flat-field map", 250, 40, 20), choose, self.f_flat_field]))
         v.addStretch(1)
         return page
 
@@ -1300,6 +1312,27 @@ class SpecvisWindow(QMainWindow):
         when no scale has been chosen, so a calibrated screen is never run as 'assumed'."""
         measured = [s for s in self.scales.all() if len(s.table) == 101]
         return max(measured, key=lambda s: s.created).id if measured else None
+
+    def current_flat_field(self) -> Optional[FlatFieldMap]:
+        return self.flat_maps.get(self.flat_field_id) if self.flat_field_id else None
+
+    def flat_field_text(self) -> str:
+        m = self.current_flat_field()
+        return m.describe() + (f"  ({m.monitor})" if m.monitor else "") if m else "None (off)"
+
+    def flat_field_choose(self) -> None:
+        maps = list(reversed(self.flat_maps.all()))
+        items = ["None (off)"] + [f"{m.name}  |  {m.monitor or '?'}  |  {m.created}  |  "
+                                  f"strength {m.strength:g}" for m in maps]
+        now = self.current_flat_field()
+        current = 1 + maps.index(now) if now in maps else 0
+        item, ok = QInputDialog.getItem(self, "Flat-field map",
+                                        "Screen evenness correction (made for one monitor "
+                                        "and its settings):", items, current, False)
+        if ok:
+            i = items.index(item)
+            self.flat_field_id = maps[i - 1].id if i else None
+            self._refresh()
 
     def current_scale(self) -> Optional[store.LuminanceScale]:
         return self.scales.get(self.scale_id) if self.scale_id else None
@@ -1738,6 +1771,7 @@ class SpecvisWindow(QMainWindow):
         scale = self.current_scale()
         self.f_scale_name.setText(scale.name if scale else store.UNCALIBRATED)
         self.f_bg_scale.setText(self.f_scale_name.text() + "  (same as stimulus)")
+        self.f_flat_field.setText(self.flat_field_text())
         cal = self.calibration()
         bg_lum, bg_b = background_for(s, cal)
         self.f_bg_lum.setText(f"{bg_lum:.2f}" + ("" if cal.calibrated else " (assumed)"))
@@ -1783,6 +1817,7 @@ class SpecvisWindow(QMainWindow):
             f"Screen             {w}x{h} px, {s.screen_width_mm:.0f} mm wide",
             f"Patient distance   {s.viewing_distance_mm:.0f} mm",
             f"Luminance scale    {self.f_scale_name.text()}",
+            f"Flat-field         {self.flat_field_text()}",
             f"Stimulus           Gabor {s.diameter_degrees:g}°, {s.spatial_frequency_cpd:g} c/°, "
             f"{s.orientation_degrees:g}°, {s.stimulus_ms:.0f} ms",
             f"Contrast           {s.zest.min_contrast:g} to {s.zest.max_contrast:g}",
@@ -1896,7 +1931,9 @@ class SpecvisWindow(QMainWindow):
         scale = self.current_scale()
         return {"settings": d, "screen": self.f_screen.currentIndex(),
                 "fullscreen": self.f_fullscreen.isChecked(),
-                "scale": dataclasses.asdict(scale) if scale else None}
+                "scale": dataclasses.asdict(scale) if scale else None,
+                "flat_field": (dataclasses.asdict(self.current_flat_field())
+                               if self.current_flat_field() else None)}
 
     def _write_job(self) -> pathlib.Path:
         path = self._job_dir / "job.json"
@@ -2002,6 +2039,7 @@ class SpecvisWindow(QMainWindow):
             self.last_file.parent.mkdir(parents=True, exist_ok=True)
             self.last_file.write_text(json.dumps(dict(
                 patient=self.patient.id if self.patient else None, scale=self.scale_id,
+                flat_field=self.flat_field_id,
                 screen=self.f_screen.currentIndex(), fullscreen=self.f_fullscreen.isChecked(),
                 settings_name=self.settings_name, settings=settings_to_dict(self.settings)),
                 indent=2))
@@ -2021,6 +2059,8 @@ class SpecvisWindow(QMainWindow):
         self.scale_id = last.get("scale") if self.scales.get(last.get("scale") or "") else None
         if self.scale_id is None:
             self.scale_id = self._newest_measured_scale()
+        ff = last.get("flat_field")
+        self.flat_field_id = ff if ff and self.flat_maps.get(ff) else None
         self.settings_name = last.get("settings_name", "(last used)")
         self.f_settings.setText(self.settings_name)
         if 0 <= last.get("screen", 0) < self.f_screen.count():

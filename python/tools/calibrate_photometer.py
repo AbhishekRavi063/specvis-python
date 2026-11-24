@@ -131,6 +131,19 @@ def _keep_screen_awake(on: bool) -> None:
         es_continuous | (es_system | es_display if on else 0))
 
 
+def release_display(after_auto_zero: bool) -> None:
+    """Let Windows manage the screen again, at the end. After --auto-zero the monitor
+    switched itself OFF again here on the lab PC (24 Nov): the zero's monitor-off command
+    came back when the display was released. So it is switched on before and after."""
+    if after_auto_zero:
+        _windows_monitors(True)
+        time.sleep(1.0)
+    _keep_screen_awake(False)
+    if after_auto_zero:
+        time.sleep(0.5)
+        _windows_monitors(True)
+
+
 def auto_zero(meter, warmup_min: float, simulated: bool = False) -> None:
     """Zero-calibrate the ColorCAL with the monitor switched off, then let it warm up."""
     print("\nAUTOMATIC ZERO CALIBRATION")
@@ -409,7 +422,6 @@ def main() -> int:
         if places and "centre" not in places:
             print("  (no centre reading: the places cannot be compared; not saved)")
             places, spreads = {}, {}
-    _keep_screen_awake(False)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     stem = OUT_DIR / time.strftime("%Y%m%d_%H%M%S")
@@ -429,7 +441,7 @@ def main() -> int:
             write_readings("_PARTIAL")
             print(f"\nStopped. The {len(rows)} readings taken are saved in "
                   f"{stem}_readings_PARTIAL.csv (no luminance scale was made).")
-        _close(win)
+        _close(win, args.auto_zero)
         return 1
 
     # Everything is saved BEFORE the window is closed: on the lab PC closing the window
@@ -492,11 +504,11 @@ def main() -> int:
         for note in photometry.uniformity_warnings(places, spreads):
             print("CHECK:", note)
     print(f"readings saved: {stem}_readings.csv / _summary.json", flush=True)
-    _close(win)
+    _close(win, args.auto_zero)
     return 0
 
 
-def _close(win) -> None:
+def _close(win, after_auto_zero: bool = False) -> None:
     """Close the stimulus window. Results are already saved; if closing hangs, the window
     (or the PowerShell / Command Prompt window) can simply be closed."""
     print("closing the measurement window...", flush=True)
@@ -504,6 +516,7 @@ def _close(win) -> None:
         win.close()
     except Exception:                                   # noqa: BLE001 -- nothing left to lose
         pass
+    release_display(after_auto_zero)
 
 
 if __name__ == "__main__":

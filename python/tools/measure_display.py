@@ -42,10 +42,32 @@ def main() -> int:
     parser.add_argument("--width", type=int, default=1200)
     parser.add_argument("--height", type=int, default=800)
     parser.add_argument("--train-ms", type=float, default=1000.0)
+    parser.add_argument("--flat-field", default="",
+                        help="draw with this flat-field map (name or id) to check that the "
+                             "correction drops no frames; needs --scale")
+    parser.add_argument("--scale", default="", help="luminance scale name (with --flat-field)")
     args = parser.parse_args()
 
+    flat_map, calibration = None, LuminanceCalibration.uncalibrated()
+    background = 0.5
+    if args.flat_field:
+        from specvis.app.store import ScaleStore
+        from specvis.core.flatfield import FlatFieldStore
+        from specvis.core.gabor import snap_background
+        flat_map = FlatFieldStore().find(args.flat_field)
+        scales = [s for s in ScaleStore().all() if s.name == args.scale or s.id == args.scale]
+        if flat_map is None or not scales:
+            print("--flat-field needs a known map and --scale (a measured luminance scale)")
+            return 1
+        calibration = scales[0].calibration()
+        _, background = snap_background(calibration, 10.0)
+
     backend = PsychoPyBackend(screen=args.screen, fullscreen=args.fullscreen)
-    backend.open(args.width, args.height, background_brightness=0.5)
+    backend.open(args.width, args.height, background_brightness=background)
+    if flat_map is not None:
+        from specvis.core.flatfield import FlatField
+        backend.set_flat_field(FlatField(flat_map, calibration, background, *backend.size_px))
+    print(f"flat-field correction: {flat_map.describe() if flat_map else 'none'}")
 
     try:
         refresh = backend.refresh_hz
@@ -61,9 +83,10 @@ def main() -> int:
             shown = ", ".join(f"{r:.3f}" for r in rates) if rates else "NONE"
             print(f"  {name:16s} {low:2d}-{high:2d} Hz : {shown}")
 
-        calibration = LuminanceCalibration.uncalibrated()
-        patch = GaborParameters(2.0, 4.0, 90.0, 0.0, 0.33, 50.0, 0.8)
-        centre = (args.width / 2.0, args.height / 2.0)
+        mean = float(calibration.luminance_at(background * 100.0))
+        patch = GaborParameters(2.0, 4.0, 90.0, 0.0, 0.33, mean if flat_map else 50.0, 0.8)
+        centre = (backend.size_px[0] / 2.0 + 300.0, backend.size_px[1] / 2.0 - 200.0) \
+            if flat_map else (args.width / 2.0, args.height / 2.0)
         polarities = [
             Texture(render_brightness(patch, calibration, 30, 30), centre),
             Texture(render_brightness(patch.reversed_phase(), calibration, 30, 30), centre),

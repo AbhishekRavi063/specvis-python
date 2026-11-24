@@ -83,6 +83,37 @@ class PsychoPyBackend(StimulusBackend):
         self._win.mouseVisible = False
         self._measured_refresh = self._measure_refresh()
 
+    def set_flat_field(self, flat_field) -> None:
+        """Draw the background as the flat-field image (static: computed once, the same
+        on every frame), or as one flat grey again with None."""
+        from psychopy import visual
+
+        win = self._require_window()
+        self._flat_field = flat_field
+        if flat_field is None:
+            win.backgroundImage = None
+            self._background_stim = None
+            return
+        if tuple(flat_field.size) != tuple(int(v) for v in win.size):
+            raise ValueError(f"flat-field made for {flat_field.size}, window is "
+                             f"{tuple(win.size)}")
+        levels = flat_field.background_levels()
+        # PsychoPy draws an array's first row at the BOTTOM: flip so row 0 is the top.
+        image = np.flipud(levels / 255.0 * 2.0 - 1.0)
+        stim = visual.ImageStim(win, image=image, units="pix", pos=(0, 0),
+                                size=(win.size[0] / self._scale, win.size[1] / self._scale),
+                                interpolate=False, colorSpace="rgb")
+        self._background_stim = stim
+        win.backgroundFit = None         # first: PsychoPy must not rescale the image
+        win.backgroundImage = stim       # drawn by PsychoPy after every flip
+        stim.draw()                      # for the next frame too
+        win.flip()
+
+    def _draw_background(self) -> None:
+        stim = getattr(self, "_background_stim", None)
+        if stim is not None:
+            stim.draw()
+
     def close(self) -> None:
         if self._win is not None:
             self._win.close()
@@ -145,7 +176,8 @@ class PsychoPyBackend(StimulusBackend):
         # Our arrays run top row first (as the Java Specvis and the generator assume);
         # PsychoPy draws an array's first row at the BOTTOM (OpenGL's convention). Without
         # this flip every patch is shown upside down: a 45 deg tilt appears as 135 deg.
-        image = np.flipud(np.asarray(texture.brightness, dtype=float)) * 2.0 - 1.0
+        # texture_pixels: the patch as generated, or corrected for the screen's evenness.
+        image = np.flipud(np.asarray(self.texture_pixels(texture), dtype=float)) * 2.0 - 1.0
 
         # PsychoPy places by centre with the origin at screen centre and y upward;
         # our geometry measures from the top-left with y downward. Converted in
@@ -214,6 +246,7 @@ class PsychoPyBackend(StimulusBackend):
         for stim in stims:
             stim.draw()
         win.clearBuffer()
+        self._draw_background()          # clearBuffer removed the flat-field background
         self._draw_fixation(fixation)
         win.flip()
 

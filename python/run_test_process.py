@@ -5,7 +5,9 @@ window and the app's Qt window never share an event loop (on a Mac they cannot).
     run_test_process.py test  JOB.json   one eye of perimetry; writes JOB.result.json
     run_test_process.py check JOB.json   the screen check: a box of known size to measure
 
-``JOB.json`` holds ``{"settings": {...}, "screen": 0, "fullscreen": true}``.
+``JOB.json`` holds ``{"settings": {...}, "screen": 0, "fullscreen": true}``, the chosen
+luminance ``"scale"`` and, when chosen in Step 2, a ``"flat_field"`` map (screen evenness
+correction; absent or null = off, nothing drawn differently).
 The result file holds ``{"folder": ..., "valid": ...}`` or ``{"error": ...}``.
 """
 
@@ -71,6 +73,24 @@ def settings_and_calibration(job: dict):
     return settings, calibration
 
 
+def use_flat_field(job: dict, backend, calibration, background: float):
+    """Switch on the flat-field map chosen in Step 2, if any. Returns a problem or None."""
+    d = job.get("flat_field")
+    if not d:
+        print("flat-field correction: none", flush=True)
+        return None
+    from specvis.core.flatfield import FlatField, map_from_dict
+    try:
+        ff = FlatField(map_from_dict(d), calibration, background, *backend.size_px,
+                       strength=job.get("flat_field_strength"))
+        backend.set_flat_field(ff)
+    except ValueError as e:
+        return f"flat-field map '{d.get('name', '?')}': {e}"
+    print(f"flat-field correction: {ff.map.describe(ff.strength)} ({ff.surface_kind}, "
+          f"dither seed {ff.seed})", flush=True)
+    return None
+
+
 def run_test(job: dict, result_path: pathlib.Path) -> int:
     from specvis.stimulus.psychopy_backend import PsychoPyBackend
 
@@ -83,6 +103,11 @@ def run_test(job: dict, result_path: pathlib.Path) -> int:
     try:
         print(f"display {backend.size_px[0]}x{backend.size_px[1]} px, "
               f"{backend.refresh_hz:.2f} Hz; luminance: {calibration.source}", flush=True)
+        problem = use_flat_field(job, backend, calibration, background)
+        if problem:
+            backend.show_screen(f"Cannot run this test:\n\n{problem}\n\nPress SPACE.")
+            result_path.write_text(json.dumps({"error": problem}))
+            return 1
         try:
             # This person's blind spot from an earlier session, if the map is on: the
             # test only checks its centre and maps again when it is seen.

@@ -53,6 +53,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from ..core.flatfield import NO_FLAT_FIELD, describe as describe_flat_field
 from ..core.gabor import GaborParameters, render_brightness
 from ..core.geometry import PhysicalScreen
 from ..core.luminance import LuminanceCalibration
@@ -60,7 +61,7 @@ from ..core.reversal import ReversalPlan
 from ..stimulus.backend import StimulusBackend, Texture
 from .fixation import FIX_NONE, FixationMonitor, judge_patch, monitor_for
 from .perimetry import (FULL_THRESHOLD, H24_2_9, PerimetrySettings, background_for,
-                        default_calibration, run_perimetry)
+                        default_calibration, flat_field_info, run_perimetry)
 from .session import Aborted, SessionError
 
 HORIZONTAL, VERTICAL = "horizontal", "vertical"
@@ -325,6 +326,8 @@ class Block2Outcome:
     counts: Dict[str, int]
     fixation_monitor: str
     setup: Dict[str, object] = field(default_factory=dict)
+    #: The flat-field (screen evenness) correction used, or {"name": "none"}.
+    flat_field: Dict[str, object] = field(default_factory=dict)
 
     def _patch_rows(self) -> List[dict]:
         return [r for r in self.rows if r["place"] != CATCH and r["counts"]]
@@ -676,7 +679,8 @@ def run_block2(settings: Block2Settings, backend: StimulusBackend,
                          calibrated=calibration.calibrated, started=started,
                          duration_s=time.perf_counter() - t0, aborted=aborted, counts=counts,
                          fixation_monitor=(monitor.describe() if watching
-                                           else settings.fixation_monitoring), setup=setup)
+                                           else settings.fixation_monitoring), setup=setup,
+                         flat_field=flat_field_info(backend))
 
 
 def _write_csv(path: pathlib.Path, rows: Sequence[dict]) -> None:
@@ -701,6 +705,7 @@ def write_outputs(outcome: Block2Outcome, directory: pathlib.Path) -> pathlib.Pa
                 background_cd_m2=round(outcome.background_cd_m2, 3),
                 calibration=dict(source=outcome.calibration_source,
                                  calibrated=outcome.calibrated),
+                flat_field=outcome.flat_field or dict(NO_FLAT_FIELD),
                 counts=outcome.counts, fixation_monitor=outcome.fixation_monitor,
                 setup=outcome.setup, overall=outcome.overall(),
                 honest_limits=["Timing is software self-report, not photodiode-validated.",
@@ -731,5 +736,6 @@ def results_text(outcome: Block2Outcome) -> str:
     if (outcome.setup.get("gaze_check") or {}).get("operator_choice"):
         lines.append("WARNING: the eye-tracker accuracy check FAILED; the run went on.")
     lines += ["", f"Eye off the +: {outcome.counts['fixation_breaks']}   "
-              f"dropped frames: {outcome.counts['dropped_frames']}"]
+              f"dropped frames: {outcome.counts['dropped_frames']}",
+              describe_flat_field(outcome.flat_field)]
     return "\n".join(lines)

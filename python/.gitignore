@@ -11,3 +11,5 @@ output/
 calibration/photometer/
 # Eye-tracker display-area backups (lab setup, kept local)
 calibration/tracker/
+# Flat-field (screen evenness) maps of the lab screen: measurements, kept local
+calibration/flatfield_maps.json

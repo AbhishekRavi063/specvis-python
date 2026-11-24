@@ -62,6 +62,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from ..core.flatfield import NO_FLAT_FIELD, describe as describe_flat_field
 from ..core.gabor import (GaborParameters, dither_8bit, measure_contrast,
                           minimum_renderable_contrast, nominal_contrast, render_brightness,
                           snap_background)
@@ -646,6 +647,13 @@ def probe_summary(rows: Sequence[dict]) -> List[dict]:
     return out
 
 
+
+def flat_field_info(backend) -> dict:
+    """The flat-field correction the backend draws with, or 'none'."""
+    info = getattr(backend, "flat_field_info", None)
+    return dict(info) if isinstance(info, dict) else dict(NO_FLAT_FIELD)
+
+
 @dataclass
 class PerimetryOutcome:
     settings: PerimetrySettings
@@ -679,6 +687,9 @@ class PerimetryOutcome:
     #: The probe block's trials and its summary per place and contrast.
     probe_rows: List[dict] = field(default_factory=list)
     probe_status: str = ""
+    #: The flat-field (screen evenness) correction used: map, strength, dither seed,
+    #: luminance scale; {"name": "none"} when off.
+    flat_field: Dict[str, object] = field(default_factory=dict)
 
     @property
     def early_press_rate(self) -> float:
@@ -2310,6 +2321,7 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                                          or blind_spot_map.get("centre_xy")) else None),
         blind_spot_search=search,
         contrast_range=db_range,
+        flat_field=flat_field_info(backend),
         blind_spot_map=blind_spot_map,
         probe_rows=probe_rows,
         probe_status=probe_status[0] or ("not run (aborted)" if settings.blind_spot_probe
@@ -2444,6 +2456,7 @@ def results_text(outcome: PerimetryOutcome, offer_keys: bool = False) -> str:
     if bs.get("blind_spot_side_not_seen"):
         lines.append("Blind spot's side looked blind: the blind-spot checks cannot show "
                      "fixation for this eye")
+    lines.append(describe_flat_field(outcome.flat_field))
     if outcome.valid:
         lines.append("SESSION VALID")
     else:
@@ -2520,6 +2533,7 @@ def _meta(outcome: PerimetryOutcome) -> dict:
         strategy=STRATEGY_NAMES.get(s.strategy, s.strategy),
         background_cd_m2=round(outcome.background_cd_m2, 3),
         dithering=s.dithering,
+        flat_field=outcome.flat_field or dict(NO_FLAT_FIELD),
         early_press_rate=outcome.early_press_rate,
         post_processing=outcome.post_processing,
         prior_table=outcome.prior_table_source,

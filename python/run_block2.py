@@ -72,6 +72,9 @@ def main() -> int:
                     help="the lab BenQ: 305 (0 = from the width and the pixels)")
     ap.add_argument("--scale", default="",
                     help='the ColorCAL scale to use, e.g. "Lab screen" (none: an assumed screen)')
+    ap.add_argument("--flat-field", default="",
+                    help="a flat-field (screen evenness) map's name or id, from "
+                         "specvis flatfield (needs --scale); default: none")
     ap.add_argument("--block1", default="",
                     help="folder of the Block 1 run whose map to use (default: this "
                          "participant's latest finished Block 1 run, for --eye if given)")
@@ -128,13 +131,33 @@ def main() -> int:
         calibration = default_calibration(settings.perimetry_settings())
         print("No --scale: contrast and background are for an ASSUMED screen, not measured.")
 
+    flat_map = None
+    if args.flat_field:
+        from specvis.core.flatfield import FlatFieldStore
+        flat_map = FlatFieldStore().find(args.flat_field)
+        if flat_map is None:
+            print(f'No flat-field map called "{args.flat_field}". Known: '
+                  + ", ".join(f'"{m.name}"' for m in FlatFieldStore().all()))
+            return 1
+        if not calibration.calibrated:
+            print("--flat-field needs --scale (a measured luminance scale).")
+            return 1
+
     from specvis.stimulus.psychopy_backend import PsychoPyBackend
     backend = PsychoPyBackend(fullscreen=not args.windowed)
-    backend.open(1400, 900, background_brightness=background_for(
-        settings.perimetry_settings(), calibration)[1])
+    background = background_for(settings.perimetry_settings(), calibration)[1]
+    backend.open(1400, 900, background_brightness=background)
     try:
         print(f"Display {backend.size_px[0]}x{backend.size_px[1]} px, "
               f"measured {backend.refresh_hz:.2f} Hz", flush=True)
+        if flat_map is not None:
+            from specvis.core.flatfield import FlatField
+            ff = FlatField(flat_map, calibration, background, *backend.size_px)
+            backend.set_flat_field(ff)
+            print(f"flat-field correction: {flat_map.describe()} ({ff.surface_kind})",
+                  flush=True)
+        else:
+            print("flat-field correction: none", flush=True)
         try:
             outcome = run_block2(settings, backend, calibration=calibration)
         except SessionError as error:

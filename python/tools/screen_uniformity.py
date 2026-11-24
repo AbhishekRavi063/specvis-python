@@ -273,6 +273,7 @@ def run(args, meter, ui, screen_info: dict, log=print) -> int:
     for n in notes:
         log("CHECK:", n)
 
+    stem.parent.mkdir(parents=True, exist_ok=True)     # the figure is drawn first
     if args.figure and not stopped:
         spots = grid_spots_mm(args.grid, args.distance_mm, args.eye) if args.grid else None
         title = (f"{args.label or 'screen'}  grey {level}  {args.note}\n"
@@ -290,7 +291,7 @@ def run(args, meter, ui, screen_info: dict, log=print) -> int:
 def main(argv=None) -> int:
     args = parse_args(argv)
     from calibrate_photometer import (ColorCalMeter, SimulatedMeter, _keep_screen_awake,
-                                      auto_zero)
+                                      auto_zero, release_display)
     grey_for(args)                                   # a bad --cd stops before the meter
     print(f"This opens on screen {args.screen}. If the monitor you want to test is not the "
           "main display, use --screen or make it the main display in Windows.")
@@ -313,11 +314,11 @@ def main(argv=None) -> int:
                    dict(screen_index=args.screen,
                         refresh_hz=round(rate, 2) if rate else None))
     finally:
-        _keep_screen_awake(False)
         try:
             win.close()
         except Exception:                            # noqa: BLE001
             pass
+        release_display(args.auto_zero)
 
 
 if __name__ == "__main__":

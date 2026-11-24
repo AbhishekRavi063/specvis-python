@@ -95,6 +95,28 @@ class Texture:
 class StimulusBackend(abc.ABC):
     """A full-screen display that can present patches on vsync."""
 
+    #: The flat-field correction in use (specvis.core.flatfield.FlatField), or None.
+    #: None is the default, and then nothing is drawn differently.
+    _flat_field = None
+
+    def set_flat_field(self, flat_field) -> None:
+        """Correct the screen's evenness from now on (None: off). Call after open()."""
+        self._flat_field = flat_field
+
+    @property
+    def flat_field_info(self) -> dict:
+        """What the session records: the map, strength and dither seed, or 'none'."""
+        from ..core.flatfield import NO_FLAT_FIELD
+        ff = self._flat_field
+        return dict(NO_FLAT_FIELD) if ff is None else ff.info()
+
+    def texture_pixels(self, texture: "Texture") -> np.ndarray:
+        """The 0-1 brightness actually drawn for a patch: as generated, or corrected for
+        the screen's evenness at its place when a flat-field map is in use."""
+        if self._flat_field is None:
+            return texture.brightness
+        return self._flat_field.correct_patch(texture.brightness, texture.centre_px)
+
     @property
     @abc.abstractmethod
     def refresh_hz(self) -> float:
