@@ -1,17 +1,9 @@
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-Results/
-*.egg-info/
-# Session output: participant data, never committed
-output/
+# The rest is in the repository's root .gitignore. Kept local, never committed:
+# eye-tracker environment (Python 3.10 + tobii-research)
 .venv-tobii/
-# Photometer readings of the lab screen: measurement results, kept local
+# photometer readings, tracker display-area backups, flat-field maps and luminance
+# scales of the lab screen: measurements
 calibration/photometer/
-# Eye-tracker display-area backups (lab setup, kept local)
 calibration/tracker/
-# Flat-field (screen evenness) maps of the lab screen: measurements, kept local
 calibration/flatfield_maps.json
-# The lab screen's luminance scales: measurements, kept local
 calibration/luminance_scales.json
