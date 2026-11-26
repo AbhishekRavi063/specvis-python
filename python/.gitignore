@@ -13,3 +13,5 @@ calibration/photometer/
 calibration/tracker/
 # Flat-field (screen evenness) maps of the lab screen: measurements, kept local
 calibration/flatfield_maps.json
+# The lab screen's luminance scales: measurements, kept local
+calibration/luminance_scales.json

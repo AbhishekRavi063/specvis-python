@@ -41,7 +41,7 @@ if /I "%~1"=="calibrate"   ( "%PY%" "%HERE%tools\calibrate_photometer.py" %2 %3 
 if /I "%~1"=="uniformity"  ( "%PY%" "%HERE%tools\screen_uniformity.py" %* & exit /b )
 if /I "%~1"=="flatfield"   ( "%PY%" "%HERE%tools\flatfield.py" %* & exit /b )
 if /I "%~1"=="preflight"   ( "%PY%" "%HERE%tools\preflight.py" %2 %3 %4 %5 %6 %7 %8 %9 & exit /b )
-if /I "%~1"=="display"     ( "%PY%" "%HERE%tools\measure_display.py" %2 %3 %4 %5 & exit /b )
+if /I "%~1"=="display"     ( "%PY%" "%HERE%tools\measure_display.py" %2 %3 %4 %5 %6 %7 %8 %9 & exit /b )
 if /I "%~1"=="tracker-display" ( "%PY%" "%HERE%tools\tracker_display.py" %2 %3 %4 %5 %6 %7 %8 %9 & exit /b )
 echo usage: python\specvis.bat {setup^|app^|app-simple^|perimetry^|block2^|build-table^|redraw-maps^|test^|display^|calibrate^|uniformity^|flatfield^|preflight^|tracker-setup^|tracker-bridge^|tracker-display}
 exit /b 2

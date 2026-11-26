@@ -25,11 +25,29 @@ import numpy as np
 
 from .backend import Fixation, Mark, PresentationReport, StimulusBackend, Texture
 
-#: A frame interval longer than this multiple of the median counts as dropped.
+#: A frame interval longer than this multiple of one refresh counts as dropped.
 DROP_FACTOR = 1.5
 
 #: Frames used to measure the refresh rate before the first trial.
 REFRESH_PROBE_FRAMES = 240
+
+
+def count_dropped(intervals_ms: Sequence[float], refresh_hz: float) -> int:
+    """Frames that took longer than 1.5 refreshes.
+
+    Judged against the refresh measured when the window opened, **not** against the
+    train's own median. Lab PC, 24 Nov: with the first flat-field version every frame
+    took two refreshes (240 Hz ran as 120 Hz), the median doubled with them, and a
+    median-based count said 0 dropped. Here such a train counts every frame as dropped.
+    The median is used only when no refresh was measured.
+    """
+    if not intervals_ms:
+        return 0
+    if refresh_hz == refresh_hz and refresh_hz > 0:        # not NaN
+        limit = DROP_FACTOR * 1000.0 / refresh_hz
+    else:
+        limit = DROP_FACTOR * statistics.median(intervals_ms)
+    return sum(1 for i in intervals_ms if i > limit)
 
 
 class PsychoPyBackend(StimulusBackend):
@@ -85,29 +103,121 @@ class PsychoPyBackend(StimulusBackend):
 
     def set_flat_field(self, flat_field) -> None:
         """Draw the background as the flat-field image (static: computed once, the same
-        on every frame), or as one flat grey again with None."""
+        on every frame), or as one flat grey again with None.
+
+        **The image is drawn ONCE, not every frame.** Lab PC, 24 Nov (Intel UHD 630,
+        1920 x 1080 at 240 Hz): drawing a full-screen image every frame takes two
+        refreshes (8.3 ms; 6.1 ms even as 8-bit, 5.0 ms even without PsychoPy's float
+        buffer), so 240 Hz ran as 120 Hz. With a map chosen the window is therefore never
+        cleared: the background stays in PsychoPy's frame buffer, and before new content
+        is drawn only the rectangles the last frames drew on (a patch, the +) are painted
+        back from the same image. A train then costs what it costs without the map
+        (measured 4.17 ms a frame). Whole screens of text are rare and untimed: those
+        repaint the full image once (one slow frame) and are then shown unchanged.
+        Needs ``useFBO=True`` (set in :meth:`open`): the frame buffer keeps its contents
+        from one flip to the next, which a plain back buffer does not promise.
+        """
         from psychopy import visual
 
         win = self._require_window()
         self._flat_field = flat_field
+        win.backgroundImage = None
+        self._background_stim = None
+        self._crops = {}
+        self._dirty = []
         if flat_field is None:
-            win.backgroundImage = None
-            self._background_stim = None
-            return
+            return                        # the next flip clears to plain grey again
+        if not getattr(win, "useFBO", False):
+            raise RuntimeError("the flat-field background needs useFBO=True")
         if tuple(flat_field.size) != tuple(int(v) for v in win.size):
             raise ValueError(f"flat-field made for {flat_field.size}, window is "
                              f"{tuple(win.size)}")
         levels = flat_field.background_levels()
         # PsychoPy draws an array's first row at the BOTTOM: flip so row 0 is the top.
         image = np.flipud(levels / 255.0 * 2.0 - 1.0)
-        stim = visual.ImageStim(win, image=image, units="pix", pos=(0, 0),
-                                size=(win.size[0] / self._scale, win.size[1] / self._scale),
-                                interpolate=False, colorSpace="rgb")
-        self._background_stim = stim
-        win.backgroundFit = None         # first: PsychoPy must not rescale the image
-        win.backgroundImage = stim       # drawn by PsychoPy after every flip
-        stim.draw()                      # for the next frame too
-        win.flip()
+        self._background_stim = visual.ImageStim(
+            win, image=image, units="pix", pos=(0, 0),
+            size=(win.size[0] / self._scale, win.size[1] / self._scale),
+            interpolate=False, colorSpace="rgb")
+        self._dirty = "all"
+        self._restore()
+        win.flip(clearBuffer=False)
+        # Re-measure with a train-like frame (a patch-sized piece repainted each frame).
+        # The drop count is judged against this refresh, so it must be the real one.
+        before = self._measured_refresh
+        probe = self._background_crop((int(win.size[0]) // 2 - 100,
+                                       int(win.size[1]) // 2 - 100, 200, 200))
+        self._measured_refresh = self._measure_refresh(probe.draw)
+        if before == before and abs(self._measured_refresh / before - 1.0) > 0.02:
+            print(f"WARNING: refresh {before:.2f} Hz before the flat-field background, "
+                  f"{self._measured_refresh:.2f} Hz with it. The display cannot keep up.",
+                  flush=True)
+
+    def _flat_field_on(self) -> bool:
+        return getattr(self, "_background_stim", None) is not None
+
+    def _background_crop(self, rect):
+        """The background image over one rectangle (column, row, width, height in
+        physical pixels from the top-left), as an ImageStim placed exactly there."""
+        from psychopy import visual
+
+        win = self._require_window()
+        w_scr, h_scr = int(win.size[0]), int(win.size[1])
+        c0, r0, w, h = rect
+        c1, r1 = min(c0 + w, w_scr), min(r0 + h, h_scr)
+        c0, r0 = max(c0, 0), max(r0, 0)
+        key = (c0, r0, c1, r1)
+        stim = self._crops.get(key)
+        if stim is None:
+            if len(self._crops) > 200:
+                self._crops.clear()
+            levels = self._flat_field.background_levels()[r0:r1, c0:c1]
+            image = np.flipud(levels / 255.0 * 2.0 - 1.0)
+            stim = visual.ImageStim(win, image=image, units="pix",
+                                    pos=self._to_units(((c0 + c1) / 2.0, (r0 + r1) / 2.0)),
+                                    size=((c1 - c0) / self._scale, (r1 - r0) / self._scale),
+                                    interpolate=False, colorSpace="rgb")
+            self._crops[key] = stim
+        return stim
+
+    def _mark_dirty(self, rect) -> None:
+        """Flat-field mode: something was drawn over ``rect`` (or "all")."""
+        if not self._flat_field_on() or self._dirty == "all":
+            return
+        if rect == "all":
+            self._dirty = "all"
+        elif rect not in self._dirty:
+            self._dirty.append(rect)
+
+    def _restore(self) -> None:
+        """Flat-field mode: paint the background back where the last frames drew."""
+        if not self._flat_field_on():
+            return
+        if self._dirty == "all":
+            self._background_stim.draw()
+        else:
+            for rect in self._dirty:
+                if rect[2] > 0 and rect[3] > 0:
+                    self._background_crop(rect).draw()
+        self._dirty = []
+
+    def _flip(self):
+        """flip(); with the flat-field background the frame buffer is kept (not cleared)."""
+        return self._require_window().flip(clearBuffer=not self._flat_field_on())
+
+    @staticmethod
+    def _patch_rect(texture: Texture):
+        """Where :meth:`_to_stim` puts a patch, in physical pixels (same rounding)."""
+        h, w = np.asarray(texture.brightness).shape[:2]
+        cx, cy = texture.centre_px
+        return (int(round(cx - w / 2.0)), int(round(cy - h / 2.0)), int(w), int(h))
+
+    def _fixation_rect(self, centre_px, size_px):
+        margin = 4.0 * self._scale                      # the 2-point line width, and more
+        half = size_px / 2.0 + margin
+        c0, r0 = int(np.floor(centre_px[0] - half)), int(np.floor(centre_px[1] - half))
+        side = int(np.ceil(2.0 * half)) + 2
+        return (c0, r0, side, side)
 
     def _draw_background(self) -> None:
         stim = getattr(self, "_background_stim", None)
@@ -139,7 +249,7 @@ class PsychoPyBackend(StimulusBackend):
 
     # -- refresh ---------------------------------------------------------------
 
-    def _measure_refresh(self) -> float:
+    def _measure_refresh(self, draw=None) -> float:
         """Measure the refresh rate rather than trusting what the OS reports.
 
         An adaptive-refresh panel advertises a nominal rate it does not hold. The
@@ -149,11 +259,13 @@ class PsychoPyBackend(StimulusBackend):
         The median frame interval is used, not the mean: a handful of long frames at
         window startup would drag a mean badly and say nothing about the steady state.
         """
-        win = self._require_window()
+        self._require_window()
         intervals: List[float] = []
         last = None
         for _ in range(REFRESH_PROBE_FRAMES):
-            stamp = win.flip()
+            if draw is not None:
+                draw()
+            stamp = self._flip()
             if last is not None:
                 intervals.append(stamp - last)
             last = stamp
@@ -209,15 +321,23 @@ class PsychoPyBackend(StimulusBackend):
                 visual.Line(win, units="pix", lineColor="white", lineWidth=2),
                 visual.Line(win, units="pix", lineColor="white", lineWidth=2),
             ]
+            self._fixation_state = None
         colour = getattr(self, "fixation_colour", "white")
-        for line in self._fixation:
-            line.lineColor = colour
-        self._fixation[0].start = (pos[0] - half, pos[1])
-        self._fixation[0].end = (pos[0] + half, pos[1])
-        self._fixation[1].start = (pos[0], pos[1] - half)
-        self._fixation[1].end = (pos[0], pos[1] + half)
+        # Set the lines only when the + moves or changes colour. Lab PC, 24 Nov: setting
+        # them on every frame (each set rebuilds the line) made trains with the + run
+        # at ~5 ms a frame instead of 4.17 at 240 Hz. Same pixels either way.
+        state = (pos, half, str(colour))
+        if getattr(self, "_fixation_state", None) != state:
+            for line in self._fixation:
+                line.lineColor = colour
+            self._fixation[0].start = (pos[0] - half, pos[1])
+            self._fixation[0].end = (pos[0] + half, pos[1])
+            self._fixation[1].start = (pos[0], pos[1] - half)
+            self._fixation[1].end = (pos[0], pos[1] + half)
+            self._fixation_state = state
         for line in self._fixation:
             line.draw()
+        self._mark_dirty(self._fixation_rect(centre_px, size_px))
 
     # -- presentation ----------------------------------------------------------
 
@@ -239,16 +359,35 @@ class PsychoPyBackend(StimulusBackend):
         if win.mouseVisible:
             win.mouseVisible = False
         stims = [self._to_stim(t) for t in polarities]
+        flat = self._flat_field_on()
 
         # Upload both textures before the train starts. Building an ImageStim inside
         # the loop would drop frames at the one moment that must not drop any.
         # They are drawn into the back buffer and then cleared, so nothing shows.
         for stim in stims:
             stim.draw()
-        win.clearBuffer()
-        self._draw_background()          # clearBuffer removed the flat-field background
-        self._draw_fixation(fixation)
-        win.flip()
+        if not flat:
+            win.clearBuffer()
+            self._draw_fixation(fixation)
+            win.flip()
+        else:
+            # Flat-field: paint the background back over the uploads and over whatever
+            # the last frames drew (also uploads those pieces), then the +. During the
+            # train only the patch is drawn; the + stays in the kept frame buffer.
+            self._restore()
+            patch_rects = list(dict.fromkeys(self._patch_rect(t) for t in polarities))
+            for rect in patch_rects:
+                self._background_crop(rect).draw()
+            self._draw_fixation(fixation)
+            fix_rect = self._fixation_rect(*fixation) if fixation is not None else None
+            # Only if the + overlaps the patch must it be redrawn over it each frame
+            # (its piece of background first, so its soft edges do not build up).
+            overlap = fix_rect is not None and any(
+                r[0] < fix_rect[0] + fix_rect[2] and fix_rect[0] < r[0] + r[2] and
+                r[1] < fix_rect[1] + fix_rect[3] and fix_rect[1] < r[1] + r[3]
+                for r in patch_rects)
+            fix_crop = self._background_crop(fix_rect) if overlap else None
+            win.flip(clearBuffer=False)
 
         stamps: List[float] = []
         onset = None
@@ -263,23 +402,30 @@ class PsychoPyBackend(StimulusBackend):
                 index = (frame // frames_per_reversal) % count
             else:
                 index = 0
-            stims[index].draw()
-            self._draw_fixation(fixation)
+            if not flat:
+                stims[index].draw()
+                self._draw_fixation(fixation)
+            else:
+                if fix_crop is not None:
+                    fix_crop.draw()
+                stims[index].draw()
+                if fix_crop is not None:
+                    self._draw_fixation(fixation)
             if frame == 0:
                 win.callOnFlip(clock.reset)
-            stamp = win.flip()
+            stamp = win.flip(clearBuffer=not flat)
             if onset is None:
                 onset = stamp
             stamps.append(stamp)
             if response_keys:
                 keys += [(k, t * 1000.0) for k, t in
                          event.getKeys(keyList=list(response_keys), timeStamped=clock)]
+        if flat:
+            for rect in patch_rects:
+                self._mark_dirty(rect)
 
         intervals = [(b - a) * 1000.0 for a, b in zip(stamps, stamps[1:])]
-        dropped = 0
-        if intervals:
-            median = statistics.median(intervals)
-            dropped = sum(1 for i in intervals if i > median * DROP_FACTOR)
+        dropped = count_dropped(intervals, self._measured_refresh)
 
         phases = (total_frames // frames_per_reversal) if frames_per_reversal > 0 else 0
 
@@ -310,6 +456,8 @@ class PsychoPyBackend(StimulusBackend):
             event.clearEvents()
         clock = core.Clock()
         limit = None if timeout_ms is None else timeout_ms / 1000.0
+        flat = self._flat_field_on()
+        shown = None                        # flat-field: the + colour now on screen
 
         while True:
             pressed = event.getKeys(keyList=list(keys), timeStamped=clock)
@@ -320,8 +468,18 @@ class PsychoPyBackend(StimulusBackend):
                 return None, None
             if on_frame is not None and on_frame() is True:
                 return None, None           # the caller ended the wait (eye left the +)
-            self._draw_fixation(fixation)
-            win.flip()
+            if not flat:
+                self._draw_fixation(fixation)
+                win.flip()
+                continue
+            # Flat-field: repaint only when something changed (first frame, or the +
+            # colour); otherwise flip the kept frame unchanged.
+            colour = getattr(self, "fixation_colour", "white")
+            if shown is None or colour != shown:
+                self._restore()
+                self._draw_fixation(fixation)
+                shown = colour
+            win.flip(clearBuffer=False)
 
     def pointer_px(self) -> Optional[tuple[float, float]]:
         """The mouse, in physical pixels from the top-left (PsychoPy gives points from
@@ -378,10 +536,22 @@ class PsychoPyBackend(StimulusBackend):
                 draw.append(label)
         refresh = self._measured_refresh if self._measured_refresh == self._measured_refresh \
             else 60.0
-        for _ in range(max(1, int(round(ms / 1000.0 * refresh)))):
-            for d in draw:
-                d.draw()
-            win.flip()
+        flat = self._flat_field_on()
+        for n in range(max(1, int(round(ms / 1000.0 * refresh)))):
+            if not flat:
+                for d in draw:
+                    d.draw()
+                win.flip()
+            else:
+                # Flat-field: the full background once (text and circles anywhere), then
+                # the same frame is shown unchanged.
+                if n == 0:
+                    self._dirty = "all"
+                    self._restore()
+                    for d in draw:
+                        d.draw()
+                    self._dirty = "all"
+                win.flip(clearBuffer=False)
             pressed = event.getKeys(keyList=list(keys))
             if pressed:
                 return pressed[0]
@@ -397,10 +567,20 @@ class PsychoPyBackend(StimulusBackend):
                                   color="white", pos=(0, h * 0.12), wrapWidth=h)
         refresh = self._measured_refresh if self._measured_refresh == self._measured_refresh \
             else 60.0
-        for _ in range(max(1, int(round(ms / 1000.0 * refresh)))):
-            message.draw()
-            self._draw_fixation(fixation)
-            win.flip()
+        flat = self._flat_field_on()
+        for n in range(max(1, int(round(ms / 1000.0 * refresh)))):
+            if not flat:
+                message.draw()
+                self._draw_fixation(fixation)
+                win.flip()
+                continue
+            if n == 0:                      # flat-field: draw once, then show unchanged
+                self._dirty = "all"
+                self._restore()
+                message.draw()
+                self._draw_fixation(fixation)
+                self._dirty = "all"
+            win.flip(clearBuffer=False)
 
     def show_screen(self, text: str, marks: Sequence[Mark] = (),
                     keys: Sequence[str] = ("space",)) -> str:
@@ -428,11 +608,15 @@ class PsychoPyBackend(StimulusBackend):
                                              pos=(pos[0], pos[1] - radius
                                                   - line_height * 1.6),
                                              wrapWidth=w * 0.3))
+        if self._flat_field_on():
+            self._dirty = "all"
+            self._restore()
         for d in drawables:
             d.draw()
         if has_marks:
             self.draw_fixation((win.size[0] / 2.0, win.size[1] / 2.0),
                                line_height * self._scale)
-        win.flip()
+        self._mark_dirty("all")
+        self._flip()
         pressed = event.waitKeys(keyList=list(keys))
         return pressed[0]

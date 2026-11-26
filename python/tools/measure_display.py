@@ -98,7 +98,7 @@ def main() -> int:
         print(f"  (a {args.train_ms:.0f} ms train resolves {bin_hz:.3f} Hz; "
               f"errors below half that cannot be seen in the spectrum)")
         header = (f"  {'requested':>10} {'actual':>10} {'error':>8} {'k':>3} "
-                  f"{'dropped':>8} {'p95 ms':>8}")
+                  f"{'dropped':>8} {'median':>7} {'p95 ms':>8} {'train ms':>9}")
         print(header)
         for requested in (6.0, 10.0, 30.0, 40.0):
             plan = ReversalPlan.for_rate(requested, refresh)
@@ -107,12 +107,20 @@ def main() -> int:
 
             intervals = sorted(report.frame_intervals_ms)
             p95 = intervals[int(len(intervals) * 0.95)] if intervals else float("nan")
+            median = statistics.median(intervals) if intervals else float("nan")
+            # How long the train really took (first to last flip), against how long
+            # it should: a train where EVERY frame is slow (24 Nov: 240 Hz shown as
+            # 120 Hz) has no outlier frames, but its length gives it away.
+            took = sum(report.frame_intervals_ms)
+            should = (frames - 1) * 1000.0 / refresh
             # Judged against this train's own spectral resolution, not against exact
             # division of a measured refresh, which nothing ever satisfies.
             flag = "  NOT PRESENTABLE" if plan.error_is_resolvable(args.train_ms) else ""
+            if took > should * 1.02 or median > 1.1 * 1000.0 / refresh:
+                flag += f"  TOO SLOW (should take {should:.0f} ms)"
             print(f"  {requested:10.2f} {plan.actual_reversals_per_second:10.3f} "
                   f"{plan.error_hz:8.4f} {plan.frames_per_reversal:3d} "
-                  f"{report.dropped_frames:8d} {p95:8.3f}{flag}")
+                  f"{report.dropped_frames:8d} {median:7.3f} {p95:8.3f} {took:9.0f}{flag}")
 
         print()
         print("TIMING IS SOFTWARE SELF-REPORT. Not photodiode-validated.")
