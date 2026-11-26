@@ -229,8 +229,8 @@ class PerimetrySettings:
     blind_spot_search_repeats: int = 2        # a position must be missed this many times
     blind_spot_search_attempts: int = 3       # searches before the average is used
     #: Map this person's own blind spot (23 Nov, our addition). After the search finds a
-    #: point inside it, the patch steps outward from there in 8 directions until it is
-    #: seen twice running; an oval through those 8 edges gives the blind spot's centre
+    #: point inside it, the patch steps outward from there in 4 directions (8 if one
+    #: fails) until it is seen twice running; an oval through the edges gives its centre
     #: and size, and the centre is checked (missed every time). The oval is where THIS
     #: patch's centre is missed, so it is smaller than the anatomical blind spot by about
     #: the patch radius -- exactly the region a grid patch cannot be seen in. Then:
@@ -239,9 +239,22 @@ class PerimetrySettings:
     #: any fixation monitor. Saved per participant and eye (python/output, never pushed):
     #: a later session only checks the saved centre and maps again if it is seen.
     blind_spot_map: bool = False
-    blind_spot_map_start_deg: float = 1.0     # first step out from the point found
-    blind_spot_map_step_deg: float = 0.5
-    blind_spot_map_max_deg: float = 7.0       # no edge by here: that direction failed
+    #: 26 Nov (lab: the first map took ~4 min, 112 patches, mostly misses): each
+    #: direction starts 2.5 deg out (the smallest edge seen was 3.75; the average spot
+    #: puts every edge at 3.75 or more), walks out in 1 deg steps until seen twice, then
+    #: one patch half way back gives the edge to 0.5 deg. Seen already at the start: it
+    #: walks inward in 0.5 deg steps to the first miss. Before 26 Nov: start 1.0, steps
+    #: of 0.5 (coarse = step), out to 7.0, 8 directions.
+    blind_spot_map_start_deg: float = 2.5     # first step out from the point found
+    blind_spot_map_step_deg: float = 0.5      # the edge's final resolution
+    blind_spot_map_coarse_step_deg: float = 1.0   # the outward steps
+    blind_spot_map_max_deg: float = 6.0       # no edge by here: that direction failed
+    #: 4: right, up, left, down first; the 4 diagonals only when one of those finds no
+    #: edge (then 6 of the 8 are needed). 8: all 8 always (the old way).
+    blind_spot_map_directions: int = 4
+    #: Map again from the oval's centre when it is further than this from the point the
+    #: search found (the search's point can sit near an edge).
+    blind_spot_remap_deg: float = 1.0
     blind_spot_verify_repeats: int = 3        # the centre must be missed this many times
     #: The blind-spot probe block (23 Nov, our design, before the test): two flashes marked
     #: 1 and 2, the patch in one of them, at the mapped blind spot's centre (and a few at
@@ -418,10 +431,15 @@ class PerimetrySettings:
                                "and a positive step")
         if self.blind_spot_map and (self.blind_spot_map_step_deg <= 0
                                     or self.blind_spot_map_start_deg <= 0
+                                    or self.blind_spot_map_coarse_step_deg
+                                    < self.blind_spot_map_step_deg
                                     or self.blind_spot_map_max_deg < self.blind_spot_map_start_deg
+                                    or self.blind_spot_map_directions not in (4, 8)
+                                    or self.blind_spot_remap_deg <= 0
                                     or self.blind_spot_verify_repeats < 1):
-            raise SessionError("the blind-spot map needs positive steps, a largest step "
-                               "beyond the first and at least 1 check")
+            raise SessionError("the blind-spot map needs a start above 0, positive steps "
+                               "(the coarse step at least the step), a largest step beyond "
+                               "the first, 4 or 8 directions and at least 1 check")
         if self.blind_spot_probe:
             if not self.blind_spot_map:
                 raise SessionError("the blind-spot probe block needs the blind-spot map")
@@ -857,6 +875,12 @@ def settings_from_dict(values: dict) -> PerimetrySettings:
     ones keep their defaults, so settings files from older versions still load."""
     known = {f.name for f in dataclasses.fields(PerimetrySettings)}
     kwargs = {k: v for k, v in values.items() if k in known}
+    if "blind_spot_map_directions" not in values:
+        # Saved before 26 Nov (the app keeps the last settings in full): the map's old
+        # start and largest step were defaults, never chosen in the app. Use the faster
+        # map's defaults instead of quietly keeping the slow one.
+        kwargs.pop("blind_spot_map_start_deg", None)
+        kwargs.pop("blind_spot_map_max_deg", None)
     if isinstance(kwargs.get("zest"), dict):
         zest_known = {f.name for f in dataclasses.fields(ZestSettings)}
         kwargs["zest"] = ZestSettings(**{k: v for k, v in kwargs["zest"].items()
@@ -1867,57 +1891,119 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             "map: strong patch on the other side")
 
     def map_edges(cx: float, cy: float, guess: Optional[Oval] = None) -> List[dict]:
-        """From a point inside the blind spot, step outward in 8 directions until the
-        patch is seen twice running; the edge is half way back to the last miss. With a
-        first oval (``guess``), each direction starts 1 deg inside its expected edge
-        instead of near the centre: the same edges, fewer flashes."""
+        """From a point inside the blind spot, step outward until the patch is seen
+        twice running; the edge is half way back to the last miss.
+
+        26 Nov: each direction starts at blind_spot_map_start_deg and steps out by the
+        coarse step; once seen twice, patches half way back (seen once is enough there)
+        bring the edge to blind_spot_map_step_deg. Seen twice at the very start: walk
+        inward by the step to the first miss. Right, up, left and down first; the
+        diagonals only if one of those finds no edge (blind_spot_map_directions 8: all 8
+        always). With a first oval (``guess``) each direction starts 1 deg inside its
+        expected edge. Missed all the way out in 2 directions: stop (a blind area)."""
         flashes = [0]
         step = settings.blind_spot_map_step_deg
+        coarse = settings.blind_spot_map_coarse_step_deg
+        top = settings.blind_spot_map_max_deg
 
-        def walk(angle: int, ux: float, uy: float, start: float,
-                 inside: float) -> Tuple[Optional[float], bool]:
-            """(edge, seen at the very first step). ``inside``: known missed up to here.
-            Missed all the way out to the largest step counts in ``blind_out``."""
-            last_missed, r = inside, start
-            while r <= settings.blind_spot_map_max_deg + 1e-9:
-                x, y = round(cx + ux * r, 3), round(cy + uy * r, 3)
-                if abs(x) > half_x - edge_room or abs(y) > half_y - edge_room:
-                    return None, False                    # off the screen: no edge here
-                seen = flash(BLIND_SPOT_MAP, x, y, f"direction {angle}")
+        def show(angle: int, ux: float, uy: float, r: float, note: str = "",
+                 count: bool = True):
+            """One map patch at distance r; 'off' when it would leave the screen. Every
+            6th counted patch is followed by a keep-pressing patch (the repeat of a seen
+            spot is not counted, as before 26 Nov)."""
+            x, y = round(cx + ux * r, 3), round(cy + uy * r, 3)
+            if abs(x) > half_x - edge_room or abs(y) > half_y - edge_room:
+                return "off"
+            seen = flash(BLIND_SPOT_MAP, x, y, f"direction {angle}{note}")
+            if count:
                 flashes[0] += 1
                 if flashes[0] % 6 == 0:
                     keep_pressing()
-                if seen and flash(BLIND_SPOT_MAP, x, y, f"direction {angle}, again"):
-                    return (last_missed + r) / 2.0, r == start
+            return seen
+
+        def refine(angle, ux, uy, missed: float, seen_at: float) -> float:
+            """Halve the gap between a miss and a seen spot down to the step (with
+            coarse steps only: stepping by the step itself, the edge is as before)."""
+            while coarse > step + 1e-9 and seen_at - missed > step + 1e-9:
+                mid = round((missed + seen_at) / 2.0 / step) * step
+                if not missed < mid < seen_at:
+                    mid = round((missed + seen_at) / 2.0, 6)
+                got = show(angle, ux, uy, mid, ", half way back")
+                if got is True:
+                    seen_at = mid
+                elif got is False:
+                    missed = mid
+                else:
+                    break                                 # eye movement / off: stop here
+            return (missed + seen_at) / 2.0
+
+        def inward(angle, ux, uy, start: float) -> float:
+            """Seen at the start: walk in by the step to the first miss."""
+            seen_at, r = start, round(start - step, 6)
+            while r >= step - 1e-9:
+                got = show(angle, ux, uy, r, ", inward")
+                if got is False:
+                    return (r + seen_at) / 2.0
+                if got is True:
+                    seen_at = r
+                r = round(r - step, 6)
+            return seen_at / 2.0                          # the point found was missed
+
+        def walk(angle: int, start: float, inside: float) -> Optional[float]:
+            """The edge in one direction, or None (off the screen, or never seen)."""
+            ux, uy = math.cos(math.radians(angle)), math.sin(math.radians(angle))
+            last_missed, r = inside, start
+            while True:
+                seen = show(angle, ux, uy, r)
+                if seen == "off":
+                    return None                           # off the screen: no edge here
+                if seen and show(angle, ux, uy, r, ", again", count=False) is True:
+                    if r != start:
+                        return refine(angle, ux, uy, last_missed, r)
+                    if coarse > step + 1e-9:
+                        return inward(angle, ux, uy, start)
+                    # The old way (coarse step = step): with a guess, walk again from
+                    # the usual start; without, the edge is half the start.
+                    if start > settings.blind_spot_map_start_deg + 1e-9:
+                        return walk(angle, settings.blind_spot_map_start_deg, 0.0)
+                    return start / 2.0
                 if seen is False:
                     last_missed = r
-                r = round(r + step, 6)
+                if r >= top - 1e-9:
+                    break
+                r = round(min(r + coarse, top), 6)
             blind_out[0] += 1
-            return None, False
+            return None
 
-        edges, blind_out = [], [0]
-        for k in range(8):
-            if blind_out[0] >= 2:
-                # Missed all the way out in 2 directions: not a blind spot but a blind
-                # area (hemianopia on this side?). Stop: more would be minutes of misses.
-                edges.append(dict(direction_deg=45 * k, edge_deg=None, xy=None,
-                                  note="not tried: the area around looked blind"))
-                continue
-            angle = 45 * k
+        def one(angle: int) -> dict:
             ux, uy = math.cos(math.radians(angle)), math.sin(math.radians(angle))
             start = settings.blind_spot_map_start_deg
             if guess is not None:
                 expected = 1.0 / math.hypot(ux / guess[2], uy / guess[3])
                 start = max(start, round((expected - 1.0) / step) * step)
-            edge, at_once = walk(angle, ux, uy, start, start - step)
-            if at_once and start > settings.blind_spot_map_start_deg:
-                # Seen where the guess said it would still be missed: walk from the middle.
-                edge, _ = walk(angle, ux, uy, settings.blind_spot_map_start_deg, 0.0)
-            elif at_once:
-                edge = start / 2.0          # seen at the first step: the edge is nearer still
-            edges.append(dict(direction_deg=angle, edge_deg=edge,
-                              xy=None if edge is None else [round(cx + ux * edge, 3),
-                                                            round(cy + uy * edge, 3)]))
+            edge = walk(angle, start, max(0.0, start - coarse))
+            return dict(direction_deg=angle, edge_deg=edge,
+                        xy=None if edge is None else [round(cx + ux * edge, 3),
+                                                      round(cy + uy * edge, 3)])
+
+        edges, blind_out = [], [0]
+        if settings.blind_spot_map_directions == 8:
+            order = list(range(0, 360, 45))
+        else:
+            order = [0, 90, 180, 270]
+        k = 0
+        while k < len(order):
+            angle = order[k]
+            k += 1
+            if blind_out[0] >= 2:
+                # Missed all the way out in 2 directions: not a blind spot but a blind
+                # area (hemianopia on this side?). Stop: more would be minutes of misses.
+                edges.append(dict(direction_deg=angle, edge_deg=None, xy=None,
+                                  note="not tried: the area around looked blind"))
+                continue
+            edges.append(one(angle))
+            if k == len(order) == 4 and any(e["xy"] is None for e in edges):
+                order += [45, 135, 225, 315]              # one failed: add the diagonals
         return edges
 
     def centre_missed(x: float, y: float) -> bool:
@@ -1957,8 +2043,10 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             if any(e.get("note") for e in edges):
                 return edges, None, ("missed all the way out in 2 directions: the area "
                                      "around the blind spot looks blind (hemianopia?)")
-            if len(got) < BLIND_SPOT_MIN_EDGES:
-                return edges, None, f"edges found in only {len(got)} of 8 directions"
+            need = 4 if len(edges) == 4 else BLIND_SPOT_MIN_EDGES
+            if len(got) < need:
+                return edges, None, (f"edges found in only {len(got)} of the {len(edges)} "
+                                     "directions tried")
             oval = fit_blind_spot_oval(got)
             return edges, oval, ("" if oval is not None else "the edges make no oval")
 
@@ -1967,7 +2055,7 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             return None, why, edges
         # The search's point can sit near an edge (the average position often does):
         # then map once more from the oval's centre, so every direction gets steps.
-        if math.hypot(oval[0] - found[0], oval[1] - found[1]) > settings.blind_spot_map_step_deg:
+        if math.hypot(oval[0] - found[0], oval[1] - found[1]) > settings.blind_spot_remap_deg:
             first = edges
             edges, oval, why = edges_and_oval(oval[0], oval[1], oval)
             if oval is None:
@@ -2019,7 +2107,13 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
             edges=edges, patch_diameter_deg=settings.diameter_degrees,
             contrast=settings.blind_spot_contrast,
             viewing_distance_mm=settings.viewing_distance_mm,
-            step_deg=settings.blind_spot_map_step_deg)
+            step_deg=settings.blind_spot_map_step_deg,
+            start_deg=settings.blind_spot_map_start_deg,
+            coarse_step_deg=settings.blind_spot_map_coarse_step_deg,
+            max_deg=settings.blind_spot_map_max_deg,
+            directions=settings.blind_spot_map_directions,
+            remap_deg=settings.blind_spot_remap_deg,
+            map_patches=sum(r["kind"] == BLIND_SPOT_MAP for r in rows))
         if oval is None:
             blind_spot_map.update(status="not mapped: used the average", reason=why)
             return

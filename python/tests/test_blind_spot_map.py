@@ -210,4 +210,121 @@ for f in sorted(presets.glob("*.json")):
     settings_from_dict(st).validate()
     require(st.get("blind_spot_map") is True, f"{f.name}: map on")
 
+print("10. the faster map (26 Nov): start 2.5 out, 1 deg steps then half way back, 4 directions")
+from sim_observer import healthy as _healthy  # noqa: E402
+
+OLD = dict(blind_spot_map_directions=8, blind_spot_map_start_deg=1.0,
+           blind_spot_map_coarse_step_deg=0.5, blind_spot_map_max_deg=7.0,
+           blind_spot_remap_deg=0.5)
+
+
+def map_patches(out) -> int:
+    return sum(r["kind"] == BLIND_SPOT_MAP for r in out.trial_rows)
+
+
+def check_fit(out, centre, half, what):
+    m = out.blind_spot_map
+    got = m.get("centre_xy") or [float("nan")] * 2
+    err = math.hypot(got[0] - centre[0], got[1] - centre[1])
+    size = max(abs(m.get("half_width_deg", 99) - half[0]),
+               abs(m.get("half_height_deg", 99) - half[1]))
+    require(m["status"] == "mapped" and err <= 0.5 and size <= 0.5,
+            f"{what}: centre {got} (off {err:.2f}), half {m.get('half_width_deg')} x "
+            f"{m.get('half_height_deg')} (true {half[0]} x {half[1]}), "
+            f"{map_flashes(out)} patches")
+    return m
+
+
+# (a) + (b): a normal spot, and a small one
+out, _ = mapped_run(21, (15.5, -1.5))
+m = check_fit(out, (15.5, -1.5), TRUE_HALF, "(a) normal spot")
+require(len(m["edges"]) == 4 and m["directions"] == 4 and m["coarse_step_deg"] == 1.0
+        and m["start_deg"] == 2.5 and m["max_deg"] == 6.0,
+        "4 directions were enough; the map records directions, start, coarse step, max")
+require(map_flashes(out) <= 40, f"(b) {map_flashes(out)} patches in all (search, map, "
+        "keep-pressing, check): 40 or fewer (was ~75-110)")
+for seed in (22, 23, 24):
+    o, _ = mapped_run(seed, (15.5, -1.5), false_alarm=0.05)
+    require(o.blind_spot_map["status"] == "mapped" and map_flashes(o) <= 50,
+            f"(b) with 5 % false presses: mapped in {map_flashes(o)} patches")
+small = (1.75, 2.5)
+o, _ = run(_healthy, 25, settings_overrides=dict(blind_spot_map=True,
+                                                fixation_monitoring="none"),
+           blind_spot=(15.5, -1.5), blind_spot_half=small, blind_spot_oval=True)
+check_fit(o, (15.5, -1.5), small, "(a) small spot (edges inside the 2.5 start: walked in)")
+require(any("inward" in r["note"] for r in o.trial_rows if r["kind"] == BLIND_SPOT_MAP),
+        "the small spot's edges came from the inward walk")
+
+# (c) the search's point 2 deg off the true centre
+o, _ = mapped_run(26, (17.5, -1.5))
+require(o.blind_spot_search.get("found_xy") == [15.5, -1.5],
+        f"(c) the search found {o.blind_spot_search.get('found_xy')}, 2 deg off")
+check_fit(o, (17.5, -1.5), TRUE_HALF, "(c) mapped again from the oval's centre")
+
+
+# (d) one direction blind out to 6 deg: the diagonals are added
+def blind_above(x, y):
+    return None if abs(x - 15.5) < 0.6 and -1.5 < y < 6.0 else _healthy(x, y)
+
+
+o, _ = run(blind_above, 27, settings_overrides=dict(blind_spot_map=True,
+                                                   fixation_monitoring="none"),
+           blind_spot=(15.5, -1.5), blind_spot_half=TRUE_HALF, blind_spot_oval=True)
+m = o.blind_spot_map
+dirs = [e["direction_deg"] for e in m.get("edges", [])]
+require(m["status"] == "mapped" and len(dirs) == 8 and set(dirs[4:]) == {45, 135, 225, 315}
+        and next(e for e in m["edges"] if e["direction_deg"] == 90)["edge_deg"] is None,
+        f"(d) up never seen: diagonals added, oval from {sum(e['xy'] is not None for e in m['edges'])} "
+        f"edges, centre {m.get('centre_xy')}")
+require(not any(r["kind"] == BLIND_SPOT_MAP and abs(r["y_deg"] - (-1.5 + 6.5)) < 1e-6
+                for r in o.trial_rows), "nothing shown beyond 6 deg")
+
+
+# (e) two directions blind: the hemianopia stop
+def blind_two(x, y):
+    up = abs(x - 15.5) < 0.6 and -1.5 < y < 8.0
+    right = abs(y + 1.5) < 0.6 and 15.5 < x < 25.0
+    return None if up or right else _healthy(x, y)
+
+
+o, _ = run(blind_two, 28, settings_overrides=dict(blind_spot_map=True,
+                                                 fixation_monitoring="none"),
+           blind_spot=(15.5, -1.5), blind_spot_half=TRUE_HALF, blind_spot_oval=True)
+m = o.blind_spot_map
+require(m["status"].startswith("not mapped") and "hemianopia" in m.get("reason", ""),
+        f"(e) {m['status']}: {m.get('reason')}")
+
+# (f) 8 directions with the old start, step and largest step: the old map, patch for
+# patch. The numbers are what the code before 26 Nov gave for these simulated people.
+for seed, centre, patches, got_centre in ((1, (15.5, -1.5), 72, [15.5, -1.5]),
+                                          (2, (18.0, -3.0), 95, [17.966, -2.948]),
+                                          (3, (13.5, 0.0), 107, [13.359, 0.108])):
+    o, _ = mapped_run(seed, centre, extra=OLD)
+    m = o.blind_spot_map
+    require(map_flashes(o) == patches and m.get("centre_xy") == got_centre
+            and len([e for e in m["edges"] if e["direction_deg"] % 90]) >= 4,
+            f"(f) old settings, blind spot at {centre}: {map_flashes(o)} patches (old code "
+            f"{patches}), centre {m.get('centre_xy')} (old {got_centre})")
+
+print("11. settings: checked, and old saved settings get the faster map")
+for bad, what in ((dict(blind_spot_map_coarse_step_deg=0.25), "a coarse step below the step"),
+                  (dict(blind_spot_map_start_deg=0.0), "a start of 0"),
+                  (dict(blind_spot_map_max_deg=2.0), "a largest step below the start"),
+                  (dict(blind_spot_map_directions=6), "6 directions")):
+    try:
+        PerimetrySettings(blind_spot_map=True, **bad).validate()
+        require(False, f"{what} refused")
+    except SessionError:
+        require(True, f"{what} refused")
+old_saved = settings_to_dict(PerimetrySettings(blind_spot_map=True))
+old_saved.update(blind_spot_map_start_deg=1.0, blind_spot_map_max_deg=7.0)
+for k in ("blind_spot_map_directions", "blind_spot_map_coarse_step_deg", "blind_spot_remap_deg"):
+    old_saved.pop(k)
+back = settings_from_dict(old_saved)
+require(back.blind_spot_map_start_deg == 2.5 and back.blind_spot_map_max_deg == 6.0,
+        "settings saved before 26 Nov (start 1.0, max 7.0) load with the faster map")
+chosen = settings_from_dict(settings_to_dict(PerimetrySettings(**OLD)))
+require(chosen.blind_spot_map_directions == 8 and chosen.blind_spot_map_start_deg == 1.0,
+        "settings saved with the new keys keep what they say")
+
 sys.exit(0 if ok else 1)
