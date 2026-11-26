@@ -356,11 +356,50 @@ o = run_perimetry(PerimetrySettings(participant_id="POS3", strategy=FULL_THRESHO
                   fixation_monitor=Tracker(distance=334.0, area=(542.3, 305.0), corners=lab,
                                            eyes=(high, high_r)))
 text, marks = obs.statuses[0]
+require("too high" not in text and "Position good" in text and "left-right" in text
+        and o.gaze_check.get("head_position_accepted_off") is None
+        and abs(o.gaze_check.get("eyes_above_screen_centre_mm", 0) - 100.0) < 1.0,
+        "26 Nov: eyes 10 cm above the screen centre but centred left-right -> good (height "
+        f"not judged), recorded: {o.gaze_check.get('eyes_above_screen_centre_mm')} mm above")
+obs = Observer(healthy, random.Random(3), width_mm=302.0, dist_mm=334.0)
+obs.open(W, H, 0.5)
+o = run_perimetry(PerimetrySettings(participant_id="POS3V", strategy=FULL_THRESHOLD,
+                                    extent=H24_2_CENTRAL, screen_width_mm=302.0,
+                                    viewing_distance_mm=334.0, fixation_monitoring=FIX_TRACKER,
+                                    head_check_vertical=True),
+                  obs, rng=random.Random(3), show_instructions=True,
+                  fixation_monitor=Tracker(distance=334.0, area=(542.3, 305.0), corners=lab,
+                                           eyes=(high, high_r)))
+text, marks = obs.statuses[0]
 require("too high" in text and "Position good" not in text
         and all(m.colour == "orange" for m in marks if m.label)
         and o.gaze_check.get("head_position_accepted_off") is True,
-        "eyes 10 cm above the screen centre: orange, 'lower the chin rest', and going on anyway "
-        "is recorded")
+        "head_check_vertical=True (the old check): eyes 10 cm high -> orange, 'lower the "
+        "chin rest', and going on anyway is recorded")
+obs = Observer(healthy, random.Random(3), width_mm=302.0, dist_mm=334.0)
+obs.open(W, H, 0.5)
+o = run_perimetry(PerimetrySettings(participant_id="POS4", strategy=FULL_THRESHOLD,
+                                    extent=H24_2_CENTRAL, screen_width_mm=302.0,
+                                    viewing_distance_mm=334.0, fixation_monitoring=FIX_TRACKER),
+                  obs, rng=random.Random(3), show_instructions=True,
+                  fixation_monitor=Tracker(distance=334.0, area=(542.3, 305.0), corners=lab,
+                                           eyes=(eye(-32.0 + 100), eye(32.0 + 100))))
+text, marks = obs.statuses[0]
+require("too far right: move the head to the left" in text and "Position good" not in text
+        and all(m.colour == "orange" for m in marks if m.label)
+        and o.gaze_check.get("head_position_accepted_off") is True,
+        "eyes 10 cm right of centre -> orange, 'move the head to the left'")
+obs = Observer(healthy, random.Random(3), width_mm=302.0, dist_mm=334.0)
+obs.open(W, H, 0.5)
+o = run_perimetry(PerimetrySettings(participant_id="EDGEY", strategy=FULL_THRESHOLD,
+                                    extent=H24_2_CENTRAL, screen_width_mm=302.0,
+                                    viewing_distance_mm=334.0, fixation_monitoring=FIX_TRACKER),
+                  obs, rng=random.Random(3), show_instructions=True,
+                  fixation_monitor=Tracker(distance=334.0,
+                                           boxes=((0.5, 0.95, 0.5), (0.5, 0.9, 0.5))))
+text, _ = obs.statuses[0]
+require("Position good" in text and "tracking may drop out" in text,
+        "eyes near the top of the tracker's view: still good (height not judged), with a note")
 plane = screen_plane(lab)
 require(abs(distance_to_screen(eye(0.0), plane) - 510.0) < 0.5
         and abs(distance_to_screen(eye(0.0), None) - eye(0.0)[2]) < 1e-9

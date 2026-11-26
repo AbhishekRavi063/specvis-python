@@ -368,6 +368,11 @@ class PerimetrySettings:
     #: How high the eyes sit above the tracker when they are level with the screen centre
     #: (half the screen height + the bezel): the middle of the positioning screen.
     tracker_eye_height_mm: float = 170.0
+    #: The head-positioning screen judges the eyes LEFT-RIGHT only (26 Nov, user): the
+    #: eyes must be centred horizontally, the distance right and the eyes inside the
+    #: tracker's view left-right. Their height is shown and recorded, not judged.
+    #: True: the eyes must be inside the circle, height too (the way before 26 Nov).
+    head_check_vertical: bool = False
     #: The tracker measures how far the eye is (Tobii gaze origin). At the start the test
     #: asks to move the chin rest when it is further than this from the set viewing
     #: distance (our suggestion); every trial records the distance measured.
@@ -1423,14 +1428,20 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 o = head.get(side)
                 if o is not None:
                     placed.append((side, eye_px(o), o))
+            vertical = settings.head_check_vertical
             inside = bool(placed) and all(
-                math.hypot(px - cx, py - cy) <= ring for _, (px, py), _ in placed)
+                (math.hypot(px - cx, py - cy) if vertical else abs(px - cx)) <= ring
+                for _, (px, py), _ in placed)
             # Lab report 16 Nov, B2: where each eye is in the tracker's view (Tobii's user
             # position guide). No data is not "fine": the check could not run.
             boxes = [head.get(f"{side}_box") for side, _, _ in placed]
             box_known = bool(placed) and all(b is not None for b in boxes)
             in_box = box_known and all(BOX_EDGE <= c <= 1 - BOX_EDGE
-                                       for b in boxes for c in b[:2])
+                                       for b in boxes for c in b[:2 if vertical else 1])
+            box_y_edge = box_known and not vertical and not all(
+                BOX_EDGE <= b[1] <= 1 - BOX_EDGE for b in boxes)
+            if placed:
+                eyes_up_mm = -(sum(p[1][1] for p in placed) / len(placed) - cy) / scale
             good = dist_ok and inside and in_box
             for side, pos, o in placed:
                 r = max(8.0, 0.22 * ring * set_mm / max(o[2], 1.0))
@@ -1446,7 +1457,7 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                 if placed and not inside:
                     mx = sum(p[1][0] for p in placed) / len(placed) - cx
                     my = sum(p[1][1] for p in placed) / len(placed) - cy
-                    if abs(my) >= abs(mx):
+                    if vertical and abs(my) >= abs(mx):
                         line += ("\nEyes too high: lower the chin rest" if my < 0 else
                                  "\nEyes too low: raise the chin rest")
                     else:
@@ -1459,12 +1470,19 @@ def run_perimetry(settings: PerimetrySettings, backend: StimulusBackend,
                     line += "\nEyes near the edge of the tracker's view: centre the head"
                 if good:
                     line += "\nPosition good"
+                if good and box_y_edge:
+                    line += ("  (the eyes are near the top or bottom of the tracker's "
+                             "view: tracking may drop out)")
             key = backend.show_status(
-                "Position the head: both eyes inside the circle.\n" + line +
+                ("Position the head: both eyes inside the circle.\n" if vertical else
+                 "Position the head: both eyes centred left-right (between the circle's "
+                 "sides).\n") + line +
                 f"\n\n{seen_key.upper()} = continue   {abort_key.upper()} = stop",
                 marks, 100.0, keys=[seen_key, abort_key])
             last_d = d if d is not None else last_d
             last_good = good
+            if placed:
+                gaze_check["eyes_above_screen_centre_mm"] = round(eyes_up_mm, 1)
             if key == abort_key:
                 raise Aborted
             if key == seen_key:
